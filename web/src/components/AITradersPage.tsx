@@ -1413,7 +1413,7 @@ function ModelConfigModal({
   onClose: () => void
   language: Language
 }) {
-  const [selectedModelId, setSelectedModelId] = useState(editingModelId || '')
+  const [selectedModelId, setSelectedModelId] = useState(editingModelId || allModels?.[0]?.id || '')
   const [apiKey, setApiKey] = useState('')
   const [baseUrl, setBaseUrl] = useState('')
   const [modelName, setModelName] = useState('')
@@ -1524,7 +1524,6 @@ function ModelConfigModal({
                 required
                 disabled={loading}
               >
-                <option value="">{t('pleaseSelectModel', language)}</option>
                 {availableModels.map((model) => (
                   <option key={model.id} value={model.id}>
                     {getShortName(model.name)} ({model.provider})
@@ -1718,7 +1717,7 @@ function ExchangeConfigModal({
   language: Language
 }) {
   const [selectedExchangeId, setSelectedExchangeId] = useState(
-    editingExchangeId || ''
+    editingExchangeId || allExchanges?.[0]?.id || ''
   )
   const [apiKey, setApiKey] = useState('')
   const [secretKey, setSecretKey] = useState('')
@@ -1965,7 +1964,6 @@ function ExchangeConfigModal({
                 }}
                 required
               >
-                <option value="">{t('pleaseSelectExchange', language)}</option>
                 {availableExchanges.map((exchange) => (
                   <option key={exchange.id} value={exchange.id}>
                     {getShortName(exchange.name)} ({exchange.type.toUpperCase()}

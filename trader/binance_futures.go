@@ -542,103 +542,83 @@ func (t *FuturesTrader) CloseShort(symbol string, quantity float64) (map[string]
 	return result, nil
 }
 
-// CancelStopLossOrders 仅取消止损单（不影响止盈单）
-func (t *FuturesTrader) CancelStopLossOrders(symbol string) error {
-	// 获取该币种的所有未完成订单
+// CancelStopLossOrdersBySide 仅取消指定方向的止损单（防止双向持仓误删）
+func (t *FuturesTrader) CancelStopLossOrdersBySide(symbol string, positionSide string) error {
 	orders, err := t.client.NewListOpenOrdersService().
 		Symbol(symbol).
 		Do(context.Background())
-
 	if err != nil {
 		return fmt.Errorf("获取未完成订单失败: %w", err)
 	}
-
-	// 过滤出止损单并取消（取消所有方向的止损单，包括LONG和SHORT）
 	canceledCount := 0
 	var cancelErrors []error
 	for _, order := range orders {
 		orderType := order.Type
-
-		// 只取消止损订单（不取消止盈订单）
-		if orderType == futures.OrderTypeStopMarket || orderType == futures.OrderTypeStop {
+		// 只取消止损订单，且方向匹配
+		if (orderType == futures.OrderTypeStopMarket || orderType == futures.OrderTypeStop) &&
+			strings.ToUpper(string(order.PositionSide)) == strings.ToUpper(positionSide) {
 			_, err := t.client.NewCancelOrderService().
 				Symbol(symbol).
 				OrderID(order.OrderID).
 				Do(context.Background())
-
 			if err != nil {
 				errMsg := fmt.Sprintf("订单ID %d: %v", order.OrderID, err)
 				cancelErrors = append(cancelErrors, fmt.Errorf("%s", errMsg))
 				log.Printf("  ⚠ 取消止损单失败: %s", errMsg)
 				continue
 			}
-
 			canceledCount++
 			log.Printf("  ✓ 已取消止损单 (订单ID: %d, 类型: %s, 方向: %s)", order.OrderID, orderType, order.PositionSide)
 		}
 	}
-
 	if canceledCount == 0 && len(cancelErrors) == 0 {
-		log.Printf("  ℹ %s 没有止损单需要取消", symbol)
+		log.Printf("  ℹ %s %s 方向没有止损单需要取消", symbol, positionSide)
 	} else if canceledCount > 0 {
-		log.Printf("  ✓ 已取消 %s 的 %d 个止损单", symbol, canceledCount)
+		log.Printf("  ✓ 已取消 %s %s 方向的 %d 个止损单", symbol, positionSide, canceledCount)
 	}
-
-	// 如果所有取消都失败了，返回错误
 	if len(cancelErrors) > 0 && canceledCount == 0 {
 		return fmt.Errorf("取消止损单失败: %v", cancelErrors)
 	}
-
 	return nil
 }
 
-// CancelTakeProfitOrders 仅取消止盈单（不影响止损单）
-func (t *FuturesTrader) CancelTakeProfitOrders(symbol string) error {
-	// 获取该币种的所有未完成订单
+// CancelTakeProfitOrdersBySide 仅取消指定方向的止盈单（防止双向持仓误删）
+func (t *FuturesTrader) CancelTakeProfitOrdersBySide(symbol string, positionSide string) error {
 	orders, err := t.client.NewListOpenOrdersService().
 		Symbol(symbol).
 		Do(context.Background())
-
 	if err != nil {
 		return fmt.Errorf("获取未完成订单失败: %w", err)
 	}
-
-	// 过滤出止盈单并取消（取消所有方向的止盈单，包括LONG和SHORT）
 	canceledCount := 0
 	var cancelErrors []error
 	for _, order := range orders {
 		orderType := order.Type
-
-		// 只取消止盈订单（不取消止损订单）
-		if orderType == futures.OrderTypeTakeProfitMarket || orderType == futures.OrderTypeTakeProfit {
+		// 只取消止盈订单，且方向匹配
+		if (orderType == futures.OrderTypeTakeProfitMarket || orderType == futures.OrderTypeTakeProfit) &&
+			strings.ToUpper(string(order.PositionSide)) == strings.ToUpper(positionSide) {
 			_, err := t.client.NewCancelOrderService().
 				Symbol(symbol).
 				OrderID(order.OrderID).
 				Do(context.Background())
-
 			if err != nil {
 				errMsg := fmt.Sprintf("订单ID %d: %v", order.OrderID, err)
 				cancelErrors = append(cancelErrors, fmt.Errorf("%s", errMsg))
 				log.Printf("  ⚠ 取消止盈单失败: %s", errMsg)
 				continue
 			}
-
 			canceledCount++
 			log.Printf("  ✓ 已取消止盈单 (订单ID: %d, 类型: %s, 方向: %s)", order.OrderID, orderType, order.PositionSide)
 		}
 	}
-
 	if canceledCount == 0 && len(cancelErrors) == 0 {
-		log.Printf("  ℹ %s 没有止盈单需要取消", symbol)
+		log.Printf("  ℹ %s %s 方向没有止盈单需要取消", symbol, positionSide)
 	} else if canceledCount > 0 {
-		log.Printf("  ✓ 已取消 %s 的 %d 个止盈单", symbol, canceledCount)
+		log.Printf("  ✓ 已取消 %s %s 方向的 %d 个止盈单", symbol, positionSide, canceledCount)
 	}
-
-	// 如果所有取消都失败了，返回错误
 	if len(cancelErrors) > 0 && canceledCount == 0 {
 		return fmt.Errorf("取消止盈单失败: %v", cancelErrors)
 	}
-
 	return nil
 }
 
@@ -924,4 +904,15 @@ func stringContains(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// 为了保持向后兼容，保留旧的无方向版本
+// CancelStopLossOrders 仅取消止损单（取消所有方向的止损单）
+func (t *FuturesTrader) CancelStopLossOrders(symbol string) error {
+	return t.CancelStopLossOrdersBySide(symbol, "")
+}
+
+// CancelTakeProfitOrders 仅取消止盈单（取消所有方向的止盈单）
+func (t *FuturesTrader) CancelTakeProfitOrders(symbol string) error {
+	return t.CancelTakeProfitOrdersBySide(symbol, "")
 }

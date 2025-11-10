@@ -39,8 +39,14 @@ type Trader interface {
 	// CancelStopLossOrders 仅取消止损单（修复 BUG：调整止损时不删除止盈）
 	CancelStopLossOrders(symbol string) error
 
+	// CancelStopLossOrdersBySide 仅取消指定方向的止损单（防止双向持仓误删）
+	CancelStopLossOrdersBySide(symbol string, positionSide string) error
+
 	// CancelTakeProfitOrders 仅取消止盈单（修复 BUG：调整止盈时不删除止损）
 	CancelTakeProfitOrders(symbol string) error
+
+	// CancelTakeProfitOrdersBySide 仅取消指定方向的止盈单（防止双向持仓误删）
+	CancelTakeProfitOrdersBySide(symbol string, positionSide string) error
 
 	// CancelAllOrders 取消该币种的所有挂单
 	CancelAllOrders(symbol string) error

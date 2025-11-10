@@ -259,9 +259,9 @@ func calculateMaxCandidates(ctx *Context) int {
 
 // buildSystemPromptWithCustom 构建包含自定义内容的 System Prompt
 func buildSystemPromptWithCustom(accountEquity float64, btcEthLeverage, altcoinLeverage int, customPrompt string, overrideBase bool, templateName string) string {
-	log.Printf("📝 buildSystemPromptWithCustom 开始 [模板: '%s', 覆盖基础: %t, 自定义prompt长度: %d]", 
+	log.Printf("📝 buildSystemPromptWithCustom 开始 [模板: '%s', 覆盖基础: %t, 自定义prompt长度: %d]",
 		templateName, overrideBase, len(customPrompt))
-	
+
 	// 如果覆盖基础prompt且有自定义prompt，只使用自定义prompt
 	if overrideBase && customPrompt != "" {
 		log.Printf("🎯 使用覆盖模式：只返回自定义prompt（长度：%d字符）", len(customPrompt))
@@ -299,7 +299,7 @@ func buildSystemPrompt(accountEquity float64, btcEthLeverage, altcoinLeverage in
 
 	// 1. 加载提示词模板（核心交易策略部分）
 	log.Printf("🔍 开始加载系统提示词模板 [请求模板: '%s']", templateName)
-	
+
 	if templateName == "" {
 		templateName = "default" // 默认使用 default 模板
 		log.Printf("ℹ️  模板名称为空，使用默认模板 'default'")
@@ -310,13 +310,13 @@ func buildSystemPrompt(accountEquity float64, btcEthLeverage, altcoinLeverage in
 		// 如果模板不存在，记录错误并使用 default
 		log.Printf("⚠️  提示词模板 '%s' 不存在，错误: %v", templateName, err)
 		log.Printf("🔄 尝试回退到默认模板 'default'")
-		
+
 		template, err = GetPromptTemplate("default")
 		if err != nil {
 			// 如果连 default 都不存在，使用内置的简化版本
 			log.Printf("❌ 无法加载默认模板 'default'，错误: %v", err)
 			log.Printf("🏠 使用内置简化版本作为最终回退")
-			
+
 			// 增强的内置模板，提供基本的交易指导
 			sb.WriteString("你是专业的加密货币交易AI。请根据市场数据做出交易决策。\n")
 			sb.WriteString("基本原则：\n")
@@ -633,9 +633,7 @@ func fixMissingQuotes(jsonStr string) string {
 func validateJSONFormat(jsonStr string) error {
 	trimmed := strings.TrimSpace(jsonStr)
 
-	// 允许 [ 和 { 之间存在任意空白（含零宽）
 	if !reArrayHead.MatchString(trimmed) {
-		// 检查是否是纯数字/范围数组（常见错误）
 		if strings.HasPrefix(trimmed, "[") && !strings.Contains(trimmed[:min(20, len(trimmed))], "{") {
 			return fmt.Errorf("不是有效的决策数组（必须包含对象 {}），实际内容: %s", trimmed[:min(50, len(trimmed))])
 		}
@@ -644,11 +642,17 @@ func validateJSONFormat(jsonStr string) error {
 
 	// 检查是否包含范围符号 ~（LLM 常见错误）
 	if strings.Contains(jsonStr, "~") {
-		return fmt.Errorf("JSON 中不可包含范围符号 ~，所有数字必须是精确的单一值")
+		outsideQuotes := true
+		for i, ch := range jsonStr {
+			if ch == '"' && (i == 0 || jsonStr[i-1] != '\\') {
+				outsideQuotes = !outsideQuotes
+			} else if ch == '~' && outsideQuotes {
+				return fmt.Errorf("JSON 中不可包含范围符号 ~，所有数字必须是精确的单一值")
+			}
+		}
 	}
 
 	// 检查是否包含千位分隔符（如 98,000）
-	// 使用简单的模式匹配：数字+逗号+3位数字
 	for i := 0; i < len(jsonStr)-4; i++ {
 		if jsonStr[i] >= '0' && jsonStr[i] <= '9' &&
 			jsonStr[i+1] == ',' &&

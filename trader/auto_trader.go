@@ -733,7 +733,10 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *decision.Decision, act
 	positions, err := at.trader.GetPositions()
 	if err == nil {
 		for _, pos := range positions {
-			if pos["symbol"] == decision.Symbol && pos["side"] == "long" {
+			symbol, _ := pos["symbol"].(string)
+			side, _ := pos["side"].(string)
+			posAmt, _ := pos["positionAmt"].(float64)
+			if symbol == decision.Symbol && strings.ToUpper(side) == "LONG" && posAmt != 0 {
 				return fmt.Errorf("❌ %s 已有多仓，拒绝开仓以防止仓位叠加超限。如需换仓，请先给出 close_long 决策", decision.Symbol)
 			}
 		}
@@ -813,7 +816,10 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *decision.Decision, ac
 	positions, err := at.trader.GetPositions()
 	if err == nil {
 		for _, pos := range positions {
-			if pos["symbol"] == decision.Symbol && pos["side"] == "short" {
+			symbol, _ := pos["symbol"].(string)
+			side, _ := pos["side"].(string)
+			posAmt, _ := pos["positionAmt"].(float64)
+			if symbol == decision.Symbol && strings.ToUpper(side) == "SHORT" && posAmt != 0 {
 				return fmt.Errorf("❌ %s 已有空仓，拒绝开仓以防止仓位叠加超限。如需换仓，请先给出 close_short 决策", decision.Symbol)
 			}
 		}
@@ -1003,9 +1009,8 @@ func (at *AutoTrader) executeUpdateStopLossWithRecord(decision *decision.Decisio
 		log.Printf("  🚨 建议：手动平掉其中一个方向的持仓，或检查系统是否有BUG")
 	}
 
-	// 取消旧的止损单（只删除止损单，不影响止盈单）
-	// 注意：如果存在双向持仓，这会删除两个方向的止损单
-	if err := at.trader.CancelStopLossOrders(decision.Symbol); err != nil {
+	// 取消旧的止损单（只删除当前方向的止损单，不影响相反方向）
+	if err := at.trader.CancelStopLossOrdersBySide(decision.Symbol, positionSide); err != nil {
 		log.Printf("  ⚠ 取消旧止损单失败: %v", err)
 		// 不中断执行，继续设置新止损
 	}
@@ -1087,9 +1092,8 @@ func (at *AutoTrader) executeUpdateTakeProfitWithRecord(decision *decision.Decis
 		log.Printf("  🚨 建议：手动平掉其中一个方向的持仓，或检查系统是否有BUG")
 	}
 
-	// 取消旧的止盈单（只删除止盈单，不影响止损单）
-	// 注意：如果存在双向持仓，这会删除两个方向的止盈单
-	if err := at.trader.CancelTakeProfitOrders(decision.Symbol); err != nil {
+	// 取消旧的止盈单（只删除当前方向的止盈单，不影响相反方向）
+	if err := at.trader.CancelTakeProfitOrdersBySide(decision.Symbol, positionSide); err != nil {
 		log.Printf("  ⚠ 取消旧止盈单失败: %v", err)
 		// 不中断执行，继续设置新止盈
 	}
@@ -1385,7 +1389,7 @@ func calculatePnLPercentage(unrealizedPnl, marginUsed float64) float64 {
 	return 0.0
 }
 
-// sortDecisionsByPriority 对决策排序：先平仓，再开仓，最后hold/wait
+// sortDecisionsByPriority 对决策排序：先平仓，后开仓，最后hold/wait
 // 这样可以避免换仓时仓位叠加超限
 func sortDecisionsByPriority(decisions []decision.Decision) []decision.Decision {
 	if len(decisions) <= 1 {

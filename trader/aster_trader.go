@@ -1222,6 +1222,106 @@ func (t *AsterTrader) CancelStopOrders(symbol string) error {
 	return nil
 }
 
+// CancelStopLossOrdersBySide 仅取消指定方向的止损单（防止双向持仓误删）
+func (t *AsterTrader) CancelStopLossOrdersBySide(symbol string, positionSide string) error {
+	params := map[string]interface{}{
+		"symbol": symbol,
+	}
+	body, err := t.request("GET", "/fapi/v3/openOrders", params)
+	if err != nil {
+		return fmt.Errorf("获取未完成订单失败: %w", err)
+	}
+	var orders []map[string]interface{}
+	if err := json.Unmarshal(body, &orders); err != nil {
+		return fmt.Errorf("解析订单数据失败: %w", err)
+	}
+	canceledCount := 0
+	var cancelErrors []error
+	for _, order := range orders {
+		orderType, _ := order["type"].(string)
+		// 只取消止损订单，且方向匹配
+		if (orderType == "STOP_MARKET" || orderType == "STOP") {
+			orderID, _ := order["orderId"].(float64)
+			posSide, _ := order["positionSide"].(string)
+			if strings.ToUpper(posSide) != strings.ToUpper(positionSide) {
+				continue
+			}
+			cancelParams := map[string]interface{}{
+				"symbol":  symbol,
+				"orderId": int64(orderID),
+			}
+			_, err := t.request("DELETE", "/fapi/v3/order", cancelParams)
+			if err != nil {
+				errMsg := fmt.Sprintf("订单ID %d: %v", int64(orderID), err)
+				cancelErrors = append(cancelErrors, fmt.Errorf("%s", errMsg))
+				log.Printf("  ⚠ 取消止损单失败: %s", errMsg)
+				continue
+			}
+			canceledCount++
+			log.Printf("  ✓ 已取消止损单 (订单ID: %d, 类型: %s, 方向: %s)", int64(orderID), orderType, posSide)
+		}
+	}
+	if canceledCount == 0 && len(cancelErrors) == 0 {
+		log.Printf("  ℹ %s %s 方向没有止损单需要取消", symbol, positionSide)
+	} else if canceledCount > 0 {
+		log.Printf("  ✓ 已取消 %s %s 方向的 %d 个止损单", symbol, positionSide, canceledCount)
+	}
+	if len(cancelErrors) > 0 && canceledCount == 0 {
+		return fmt.Errorf("取消止损单失败: %v", cancelErrors)
+	}
+	return nil
+}
+
+// CancelTakeProfitOrdersBySide 仅取消指定方向的止盈单（防止双向持仓误删）
+func (t *AsterTrader) CancelTakeProfitOrdersBySide(symbol string, positionSide string) error {
+	params := map[string]interface{}{
+		"symbol": symbol,
+	}
+	body, err := t.request("GET", "/fapi/v3/openOrders", params)
+	if err != nil {
+		return fmt.Errorf("获取未完成订单失败: %w", err)
+	}
+	var orders []map[string]interface{}
+	if err := json.Unmarshal(body, &orders); err != nil {
+		return fmt.Errorf("解析订单数据失败: %w", err)
+	}
+	canceledCount := 0
+	var cancelErrors []error
+	for _, order := range orders {
+		orderType, _ := order["type"].(string)
+		// 只取消止盈订单，且方向匹配
+		if (orderType == "TAKE_PROFIT_MARKET" || orderType == "TAKE_PROFIT") {
+			orderID, _ := order["orderId"].(float64)
+			posSide, _ := order["positionSide"].(string)
+			if strings.ToUpper(posSide) != strings.ToUpper(positionSide) {
+				continue
+			}
+			cancelParams := map[string]interface{}{
+				"symbol":  symbol,
+				"orderId": int64(orderID),
+			}
+			_, err := t.request("DELETE", "/fapi/v3/order", cancelParams)
+			if err != nil {
+				errMsg := fmt.Sprintf("订单ID %d: %v", int64(orderID), err)
+				cancelErrors = append(cancelErrors, fmt.Errorf("%s", errMsg))
+				log.Printf("  ⚠ 取消止盈单失败: %s", errMsg)
+				continue
+			}
+			canceledCount++
+			log.Printf("  ✓ 已取消止盈单 (订单ID: %d, 类型: %s, 方向: %s)", int64(orderID), orderType, posSide)
+		}
+	}
+	if canceledCount == 0 && len(cancelErrors) == 0 {
+		log.Printf("  ℹ %s %s 方向没有止盈单需要取消", symbol, positionSide)
+	} else if canceledCount > 0 {
+		log.Printf("  ✓ 已取消 %s %s 方向的 %d 个止盈单", symbol, positionSide, canceledCount)
+	}
+	if len(cancelErrors) > 0 && canceledCount == 0 {
+		return fmt.Errorf("取消止盈单失败: %v", cancelErrors)
+	}
+	return nil
+}
+
 // FormatQuantity 格式化数量（实现Trader接口）
 func (t *AsterTrader) FormatQuantity(symbol string, quantity float64) (string, error) {
 	formatted, err := t.formatQuantity(symbol, quantity)

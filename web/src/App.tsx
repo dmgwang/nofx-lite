@@ -14,6 +14,7 @@ import { LanguageProvider, useLanguage } from './contexts/LanguageContext'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { t, type Language } from './i18n/translations'
 import { useSystemConfig } from './hooks/useSystemConfig'
+import { APP_VERSION } from './version'
 import { AlertTriangle } from 'lucide-react'
 import type {
     SystemStatus,
@@ -638,6 +639,8 @@ function TraderDetailsPage({
                             <span>{t('cycles', language)}: {status.call_count}</span>
                             <span>•</span>
                             <span>{t('runtime', language)}: {status.runtime_minutes} min</span>
+                            <span>•</span>
+                            <span>v{APP_VERSION}</span>
                         </>
                     )}
                 </div>

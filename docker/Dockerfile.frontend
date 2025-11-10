@@ -7,12 +7,17 @@
 
 ARG NODE_VERSION=20-alpine
 ARG NGINX_VERSION=alpine
+ARG VITE_APP_VERSION=dev
 
 # ──────────────────────────────────────────────────────────────
 # Build Stage (Node)
 # ──────────────────────────────────────────────────────────────
 FROM node:${NODE_VERSION} AS builder
 WORKDIR /build
+
+# 注入版本号
+ARG VITE_APP_VERSION
+ENV VITE_APP_VERSION=${VITE_APP_VERSION}
 
 COPY web/package*.json ./
 RUN npm ci

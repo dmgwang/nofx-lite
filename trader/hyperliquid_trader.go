@@ -596,19 +596,19 @@ func (t *HyperliquidTrader) CloseShort(symbol string, quantity float64) (map[str
 
 // CancelStopOrders 取消该币种的止盈/止
 
-// CancelStopLossOrders 仅取消止损单（Hyperliquid 暂无法区分止损和止盈，取消所有）
-func (t *HyperliquidTrader) CancelStopLossOrders(symbol string) error {
-	// Hyperliquid SDK 的 OpenOrder 结构不暴露 trigger 字段
-	// 无法区分止损和止盈单，因此取消该币种的所有挂单
-	log.Printf("  ⚠️ Hyperliquid 无法区分止损/止盈单，将取消所有挂单")
+// CancelStopLossOrdersBySide 仅取消指定方向的止损单（防止双向持仓误删）
+func (t *HyperliquidTrader) CancelStopLossOrdersBySide(symbol string, positionSide string) error {
+	// Hyperliquid SDK 的 OpenOrder 结构不暴露 trigger 字段，也无法区分方向
+	// 降级为取消该币种所有挂单，并给出警告
+	log.Printf("  ⚠️ Hyperliquid 无法区分止损/止盈单及方向，将取消 %s 所有挂单", symbol)
 	return t.CancelStopOrders(symbol)
 }
 
-// CancelTakeProfitOrders 仅取消止盈单（Hyperliquid 暂无法区分止损和止盈，取消所有）
-func (t *HyperliquidTrader) CancelTakeProfitOrders(symbol string) error {
-	// Hyperliquid SDK 的 OpenOrder 结构不暴露 trigger 字段
-	// 无法区分止损和止盈单，因此取消该币种的所有挂单
-	log.Printf("  ⚠️ Hyperliquid 无法区分止损/止盈单，将取消所有挂单")
+// CancelTakeProfitOrdersBySide 仅取消指定方向的止盈单（防止双向持仓误删）
+func (t *HyperliquidTrader) CancelTakeProfitOrdersBySide(symbol string, positionSide string) error {
+	// Hyperliquid SDK 的 OpenOrder 结构不暴露 trigger 字段，也无法区分方向
+	// 降级为取消该币种所有挂单，并给出警告
+	log.Printf("  ⚠️ Hyperliquid 无法区分止损/止盈单及方向，将取消 %s 所有挂单", symbol)
 	return t.CancelStopOrders(symbol)
 }
 
@@ -638,36 +638,20 @@ func (t *HyperliquidTrader) CancelAllOrders(symbol string) error {
 
 // CancelStopOrders 取消该币种的止盈/止损单（用于调整止盈止损位置）
 func (t *HyperliquidTrader) CancelStopOrders(symbol string) error {
-	coin := convertSymbolToHyperliquid(symbol)
+	log.Printf("⚠ Hyperliquid 无法区分方向，将取消 %s 全部止盈止损单", symbol)
+	return t.CancelAllOrders(symbol)
+}
 
-	// 获取所有挂单
-	openOrders, err := t.exchange.Info().OpenOrders(t.ctx, t.walletAddr)
-	if err != nil {
-		return fmt.Errorf("获取挂单失败: %w", err)
-	}
+// CancelStopLossOrders 仅取消止损单（取消所有方向的止损单）
+func (t *HyperliquidTrader) CancelStopLossOrders(symbol string) error {
+	log.Printf("⚠ Hyperliquid 无法区分方向，将取消 %s 全部止损单", symbol)
+	return t.CancelAllOrders(symbol)
+}
 
-	// 注意：Hyperliquid SDK 的 OpenOrder 结构不暴露 trigger 字段
-	// 因此暂时取消该币种的所有挂单（包括止盈止损单）
-	// 这是安全的，因为在设置新的止盈止损之前，应该清理所有旧订单
-	canceledCount := 0
-	for _, order := range openOrders {
-		if order.Coin == coin {
-			_, err := t.exchange.Cancel(t.ctx, coin, order.Oid)
-			if err != nil {
-				log.Printf("  ⚠ 取消订单失败 (oid=%d): %v", order.Oid, err)
-				continue
-			}
-			canceledCount++
-		}
-	}
-
-	if canceledCount == 0 {
-		log.Printf("  ℹ %s 没有挂单需要取消", symbol)
-	} else {
-		log.Printf("  ✓ 已取消 %s 的 %d 个挂单（包括止盈/止损单）", symbol, canceledCount)
-	}
-
-	return nil
+// CancelTakeProfitOrders 仅取消止盈单（取消所有方向的止盈单）
+func (t *HyperliquidTrader) CancelTakeProfitOrders(symbol string) error {
+	log.Printf("⚠ Hyperliquid 无法区分方向，将取消 %s 全部止盈单", symbol)
+	return t.CancelAllOrders(symbol)
 }
 
 // GetMarketPrice 获取市场价格
