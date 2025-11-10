@@ -616,7 +616,7 @@ Open your browser and visit: **🌐 http://localhost:3000**
 
 **Step 1**: Register and Create Aster API Wallet
 
-1. Register via [Aster Referral Link](https://www.asterdex.com/en/referral/fdfc0e) (get fee discounts!)
+1. Register via [Aster Referral Link](https://www.asterdex.com/en/referral/14Da7f) (get fee discounts!)
 2. Visit [Aster API Wallet](https://www.asterdex.com/en/api-wallet)
 3. Connect your main wallet (MetaMask, WalletConnect, etc.)
 4. Click "Create API Wallet"
