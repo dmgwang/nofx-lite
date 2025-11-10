@@ -114,7 +114,7 @@ A Binance-compatible decentralized perpetual futures exchange!
 
 **Quick Start:**
 
-1. Register via [Aster Referral Link](https://www.asterdex.com/en/referral/fdfc0e) (get fee discounts!)
+1. Register via [Aster Referral Link](https://www.asterdex.com/en/referral/14Da7f) (get fee discounts!)
 2. Visit [Aster API Wallet](https://www.asterdex.com/en/api-wallet)
 3. Connect your main wallet and create an API wallet
 4. Copy the API Signer address and Private Key
@@ -302,7 +302,7 @@ services:
 
 Before using this system, you need a Binance Futures account. **Use our referral link to save on trading fees:**
 
-**🎁 [Register Binance - Get Fee Discount](https://www.binance.com/join?ref=TINKLEVIP)**
+**🎁 [Register Binance - Get Fee Discount](https://www.maxweb.red/referral/earn-together/refer2earn-usdc/claim?hl=en&ref=GRO_28502_F9I5J)**
 
 ### Registration Steps:
 
