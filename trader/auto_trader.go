@@ -10,6 +10,7 @@ import (
 	"nofx-lite/market"
 	"nofx-lite/mcp"
 	"nofx-lite/pool"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -105,9 +106,14 @@ type AutoTrader struct {
 	monitorWg             sync.WaitGroup     // 用于等待监控goroutine结束
 	peakPnLCache          map[string]float64 // 最高收益缓存 (symbol -> 峰值盈亏百分比)
 	peakPnLCacheMutex     sync.RWMutex       // 缓存读写锁
-	lastBalanceSyncTime   time.Time          // 上次余额同步时间
-	database              interface{}        // 数据库引用（用于自动更新余额）
-	userID                string             // 用户ID
+    lastBalanceSyncTime   time.Time          // 上次余额同步时间
+    database              interface{}        // 数据库引用（用于自动更新余额）
+    userID                string             // 用户ID
+    // Risk tracking
+    dayStartEquity        float64            // Equity at daily reset start
+    equityPeak            float64            // Peak equity since start/reset
+    drawdownBreachCount   map[string]int     // Consecutive drawdown breach counts (symbol_side -> count)
+    drawdownBreachWindow  int                // Required consecutive checks to trigger emergency close
 }
 
 // NewAutoTrader 创建自动交易器
@@ -202,6 +208,19 @@ func NewAutoTrader(config AutoTraderConfig, database interface{}, userID string)
 	logDir := fmt.Sprintf("decision_logs/%s", config.ID)
 	decisionLogger := logger.NewDecisionLogger(logDir)
 
+	// 验证决策日志目录是否成功创建
+	if _, err := os.Stat(logDir); os.IsNotExist(err) {
+		log.Printf("⚠️ [%s] 决策日志目录创建失败: %s，尝试手动创建", config.Name, logDir)
+		// 尝试创建父目录
+		if err := os.MkdirAll("decision_logs", 0755); err != nil {
+			log.Printf("⚠️ [%s] 创建父目录失败: %v", config.Name, err)
+		}
+	} else if err != nil {
+		log.Printf("⚠️ [%s] 检查决策日志目录时出错: %v", config.Name, err)
+	} else {
+		log.Printf("✓ [%s] 决策日志目录已就绪: %s", config.Name, logDir)
+	}
+
 	// 设置默认系统提示词模板
 	systemPromptTemplate := config.SystemPromptTemplate
 	if systemPromptTemplate == "" {
@@ -231,10 +250,14 @@ func NewAutoTrader(config AutoTraderConfig, database interface{}, userID string)
 		monitorWg:             sync.WaitGroup{},
 		peakPnLCache:          make(map[string]float64),
 		peakPnLCacheMutex:     sync.RWMutex{},
-		lastBalanceSyncTime:   time.Now(), // 初始化为当前时间
-		database:              database,
-		userID:                userID,
-	}, nil
+        lastBalanceSyncTime:   time.Now(), // 初始化为当前时间
+        database:              database,
+        userID:                userID,
+        dayStartEquity:        config.InitialBalance,
+        equityPeak:            config.InitialBalance,
+        drawdownBreachCount:   make(map[string]int),
+        drawdownBreachWindow:  3,
+    }, nil
 }
 
 // Run 运行自动交易主循环
@@ -247,6 +270,22 @@ func (at *AutoTrader) Run() error {
 	log.Printf("💰 初始余额: %.2f USDT", at.initialBalance)
 	log.Printf("⚙️  扫描间隔: %v", at.config.ScanInterval)
 	log.Println("🤖 AI将全权决定杠杆、仓位大小、止损止盈等参数")
+
+	// 验证决策日志目录是否存在，如果不存在则重新创建
+	logDir := fmt.Sprintf("decision_logs/%s", at.id)
+	if _, err := os.Stat(logDir); os.IsNotExist(err) {
+		log.Printf("⚠️ [%s] 决策日志目录不存在，正在重新创建: %s", at.name, logDir)
+		if err := os.MkdirAll(logDir, 0700); err != nil {
+			log.Printf("❌ [%s] 重新创建决策日志目录失败: %v", at.name, err)
+			// 尝试创建父目录
+			if err := os.MkdirAll("decision_logs", 0755); err != nil {
+				log.Printf("❌ [%s] 创建父目录失败: %v", at.name, err)
+			}
+		} else {
+			log.Printf("✓ [%s] 决策日志目录创建成功: %s", at.name, logDir)
+		}
+	}
+
 	at.monitorWg.Add(1)
 	defer at.monitorWg.Done()
 
@@ -300,85 +339,96 @@ func (at *AutoTrader) autoSyncBalanceIfNeeded() {
 	balanceInfo, err := at.trader.GetBalance()
 	if err != nil {
 		log.Printf("⚠️ [%s] 查询余额失败: %v", at.name, err)
-		at.lastBalanceSyncTime = time.Now() // 即使失败也更新时间，避免频繁重试
+		at.updateLastSyncTime()
 		return
 	}
 
 	// 提取可用余额
-	var actualBalance float64
-	if availableBalance, ok := balanceInfo["available_balance"].(float64); ok && availableBalance > 0 {
-		actualBalance = availableBalance
-	} else if availableBalance, ok := balanceInfo["availableBalance"].(float64); ok && availableBalance > 0 {
-		actualBalance = availableBalance
-	} else if totalBalance, ok := balanceInfo["balance"].(float64); ok && totalBalance > 0 {
-		actualBalance = totalBalance
-	} else {
-		log.Printf("⚠️ [%s] 无法提取可用余额", at.name)
-		at.lastBalanceSyncTime = time.Now()
+	actualBalance := at.extractBalance(balanceInfo)
+	if actualBalance <= 0 {
+		log.Printf("⚠️ [%s] 无法提取有效余额", at.name)
+		at.updateLastSyncTime()
 		return
 	}
 
-	oldBalance := at.initialBalance
-
-	// 防止除以零：如果初始余额无效，直接更新为实际余额
-	if oldBalance <= 0 {
-		log.Printf("⚠️ [%s] 初始余额无效 (%.2f)，直接更新为实际余额 %.2f USDT", at.name, oldBalance, actualBalance)
-		at.initialBalance = actualBalance
-		if at.database != nil {
-			type DatabaseUpdater interface {
-				UpdateTraderInitialBalance(userID, id string, newBalance float64) error
-			}
-			if db, ok := at.database.(DatabaseUpdater); ok {
-				if err := db.UpdateTraderInitialBalance(at.userID, at.id, actualBalance); err != nil {
-					log.Printf("❌ [%s] 更新数据库失败: %v", at.name, err)
-				} else {
-					log.Printf("✅ [%s] 已自动同步余额到数据库", at.name)
-				}
-			} else {
-				log.Printf("⚠️ [%s] 数据库类型不支持UpdateTraderInitialBalance接口", at.name)
-			}
-		} else {
-			log.Printf("⚠️ [%s] 数据库引用为空，余额仅在内存中更新", at.name)
-		}
-		at.lastBalanceSyncTime = time.Now()
+	// 处理初始余额无效的情况
+	if at.initialBalance <= 0 {
+		at.handleInvalidInitialBalance(actualBalance)
 		return
 	}
 
-	changePercent := ((actualBalance - oldBalance) / oldBalance) * 100
-
-	// 变化超过5%才更新
-	if math.Abs(changePercent) > 5.0 {
-		log.Printf("🔔 [%s] 检测到余额大幅变化: %.2f → %.2f USDT (%.2f%%)",
-			at.name, oldBalance, actualBalance, changePercent)
-
-		// 更新内存中的 initialBalance
-		at.initialBalance = actualBalance
-
-		// 更新数据库（需要类型断言）
-		if at.database != nil {
-			// 这里需要根据实际的数据库类型进行类型断言
-			// 由于使用了 interface{}，我们需要在 TraderManager 层面处理更新
-			// 或者在这里进行类型检查
-			type DatabaseUpdater interface {
-				UpdateTraderInitialBalance(userID, id string, newBalance float64) error
-			}
-			if db, ok := at.database.(DatabaseUpdater); ok {
-				err := db.UpdateTraderInitialBalance(at.userID, at.id, actualBalance)
-				if err != nil {
-					log.Printf("❌ [%s] 更新数据库失败: %v", at.name, err)
-				} else {
-					log.Printf("✅ [%s] 已自动同步余额到数据库", at.name)
-				}
-			} else {
-				log.Printf("⚠️ [%s] 数据库类型不支持UpdateTraderInitialBalance接口", at.name)
-			}
-		} else {
-			log.Printf("⚠️ [%s] 数据库引用为空，余额仅在内存中更新", at.name)
-		}
-	} else {
+	// 计算变化百分比并决定是否更新
+	changePercent := ((actualBalance - at.initialBalance) / at.initialBalance) * 100
+	if math.Abs(changePercent) <= 5.0 {
 		log.Printf("✓ [%s] 余额变化不大 (%.2f%%)，无需更新", at.name, changePercent)
+		at.updateLastSyncTime()
+		return
 	}
 
+	// 余额变化超过阈值，执行更新
+	log.Printf("🔔 [%s] 检测到余额大幅变化: %.2f → %.2f USDT (%.2f%%)",
+		at.name, at.initialBalance, actualBalance, changePercent)
+	
+	at.updateBalance(actualBalance)
+	at.updateLastSyncTime()
+}
+
+// extractBalance 从余额信息中提取有效余额值
+func (at *AutoTrader) extractBalance(balanceInfo map[string]interface{}) float64 {
+	// 定义可能的余额字段及其优先级
+	balanceFields := []string{"available_balance", "availableBalance", "balance"}
+	
+	for _, field := range balanceFields {
+		if value, ok := balanceInfo[field].(float64); ok && value > 0 {
+			return value
+		}
+	}
+	
+	return 0
+}
+
+// handleInvalidInitialBalance 处理初始余额无效的情况
+func (at *AutoTrader) handleInvalidInitialBalance(actualBalance float64) {
+	log.Printf("⚠️ [%s] 初始余额无效 (%.2f)，直接更新为实际余额 %.2f USDT", 
+		at.name, at.initialBalance, actualBalance)
+	
+	at.initialBalance = actualBalance
+	at.updateBalanceInDatabase(actualBalance)
+	at.updateLastSyncTime()
+}
+
+// updateBalance 更新余额（内存和数据库）
+func (at *AutoTrader) updateBalance(newBalance float64) {
+	at.initialBalance = newBalance
+	at.updateBalanceInDatabase(newBalance)
+}
+
+// updateBalanceInDatabase 更新数据库中的余额
+func (at *AutoTrader) updateBalanceInDatabase(balance float64) {
+	if at.database == nil {
+		log.Printf("⚠️ [%s] 数据库引用为空，余额仅在内存中更新", at.name)
+		return
+	}
+
+	type DatabaseUpdater interface {
+		UpdateTraderInitialBalance(userID, id string, newBalance float64) error
+	}
+	
+	db, ok := at.database.(DatabaseUpdater)
+	if !ok {
+		log.Printf("⚠️ [%s] 数据库类型不支持UpdateTraderInitialBalance接口", at.name)
+		return
+	}
+
+	if err := db.UpdateTraderInitialBalance(at.userID, at.id, balance); err != nil {
+		log.Printf("❌ [%s] 更新数据库失败: %v", at.name, err)
+	} else {
+		log.Printf("✅ [%s] 已自动同步余额到数据库", at.name)
+	}
+}
+
+// updateLastSyncTime 更新最后同步时间
+func (at *AutoTrader) updateLastSyncTime() {
 	at.lastBalanceSyncTime = time.Now()
 }
 
@@ -406,33 +456,36 @@ func (at *AutoTrader) runCycle() error {
 		return nil
 	}
 
-	// 2. 重置日盈亏（每天重置）
-	if time.Since(at.lastResetTime) > 24*time.Hour {
-		at.dailyPnL = 0
-		at.lastResetTime = time.Now()
-		log.Println("📅 日盈亏已重置")
-	}
+    // 2. 重置日盈亏（每天重置）
+    if time.Since(at.lastResetTime) > 24*time.Hour {
+        at.dailyPnL = 0
+        at.lastResetTime = time.Now()
+        // Reset day start equity to current equity on next context build
+        log.Println("📅 Daily PnL reset and day start equity will refresh")
+    }
 
 	// 3. 自动同步余额（每10分钟检查一次，充值/提现后自动更新）
 	at.autoSyncBalanceIfNeeded()
 
-	// 4. 收集交易上下文
-	ctx, err := at.buildTradingContext()
-	if err != nil {
-		record.Success = false
-		record.ErrorMessage = fmt.Sprintf("构建交易上下文失败: %v", err)
-		at.decisionLogger.LogDecision(record)
-		return fmt.Errorf("构建交易上下文失败: %w", err)
-	}
+    // 4. 收集交易上下文
+    ctx, err := at.buildTradingContext()
+    if err != nil {
+        record.Success = false
+        record.ErrorMessage = fmt.Sprintf("构建交易上下文失败: %v", err)
+        at.decisionLogger.LogDecision(record)
+        return fmt.Errorf("构建交易上下文失败: %w", err)
+    }
 
-	// 保存账户状态快照
-	record.AccountState = logger.AccountSnapshot{
-		TotalBalance:          ctx.Account.TotalEquity,
-		AvailableBalance:      ctx.Account.AvailableBalance,
-		TotalUnrealizedProfit: ctx.Account.TotalPnL,
-		PositionCount:         ctx.Account.PositionCount,
-		MarginUsedPct:         ctx.Account.MarginUsedPct,
-	}
+    // 保存账户状态快照
+    record.AccountState = logger.AccountSnapshot{
+        TotalBalance:          ctx.Account.TotalEquity,
+        AvailableBalance:      ctx.Account.AvailableBalance,
+        TotalUnrealizedProfit: ctx.Account.TotalPnL,
+        PositionCount:         ctx.Account.PositionCount,
+        MarginUsedPct:         ctx.Account.MarginUsedPct,
+        DayStartEquity:        at.dayStartEquity,
+        EquityPeak:            at.equityPeak,
+    }
 
 	// 保存持仓快照
 	for _, pos := range ctx.Positions {
@@ -453,12 +506,28 @@ func (at *AutoTrader) runCycle() error {
 		record.CandidateCoins = append(record.CandidateCoins, coin.Symbol)
 	}
 
-	log.Printf("📊 账户净值: %.2f USDT | 可用: %.2f USDT | 持仓: %d",
-		ctx.Account.TotalEquity, ctx.Account.AvailableBalance, ctx.Account.PositionCount)
+    log.Printf("📊 账户净值: %.2f USDT | 可用: %.2f USDT | 持仓: %d",
+        ctx.Account.TotalEquity, ctx.Account.AvailableBalance, ctx.Account.PositionCount)
 
-	// 5. 调用AI获取完整决策
-	log.Printf("🤖 正在请求AI分析并决策... [模板: %s]", at.systemPromptTemplate)
-	decision, err := decision.GetFullDecisionWithCustomPrompt(ctx, at.mcpClient, at.customPrompt, at.overrideBasePrompt, at.systemPromptTemplate)
+    // Risk enforcement: update daily PnL, peak equity and pause if needed
+    if at.CheckAndApplyRiskPause(ctx.Account.TotalEquity) {
+        remaining := at.stopUntil.Sub(time.Now())
+        msg := fmt.Sprintf(
+            "Risk control triggered: paused for %.0f minutes (equity=%.2f)",
+            remaining.Minutes(), ctx.Account.TotalEquity,
+        )
+        log.Printf("⏸ %s", msg)
+        record.Success = false
+        record.ErrorMessage = msg
+        if err := at.decisionLogger.LogDecision(record); err != nil {
+            log.Printf("⚠ Failed to save decision record: %v", err)
+        }
+        return nil
+    }
+
+    // 5. 调用AI获取完整决策
+    log.Printf("🤖 正在请求AI分析并决策... [模板: %s]", at.systemPromptTemplate)
+    decision, err := decision.GetFullDecisionWithCustomPrompt(ctx, at.mcpClient, at.customPrompt, at.overrideBasePrompt, at.systemPromptTemplate)
 
 	// 即使有错误，也保存思维链、决策和输入prompt（用于debug）
 	if decision != nil {
@@ -496,6 +565,14 @@ func (at *AutoTrader) runCycle() error {
 		return fmt.Errorf("获取AI决策失败: %w", err)
 	}
 
+    // 7. Pre-decision analysis and position optimization
+    // Use a small window to summarize recent cycles (e.g., 30)
+    recentPerf, _ := at.decisionLogger.AnalyzePerformance(30)
+    record.ExecutionLog = append(record.ExecutionLog, "Pre-decision analysis: recent cycle summary")
+    if recentPerf != nil {
+        record.ExecutionLog = append(record.ExecutionLog, fmt.Sprintf("WinRate %.1f%%, ProfitFactor %.2f, Trades %d", recentPerf.WinRate, recentPerf.ProfitFactor, recentPerf.TotalTrades))
+    }
+
 	log.Println()
 	log.Print(strings.Repeat("-", 70))
 	// 8. 对决策排序：确保先平仓后开仓（防止仓位叠加超限）
@@ -504,10 +581,13 @@ func (at *AutoTrader) runCycle() error {
 	// 8. 对决策排序：确保先平仓后开仓（防止仓位叠加超限）
 	sortedDecisions := sortDecisionsByPriority(decision.Decisions)
 
-	log.Println("🔄 执行顺序（已优化）: 先平仓→后开仓")
-	for i, d := range sortedDecisions {
-		log.Printf("  [%d] %s %s", i+1, d.Symbol, d.Action)
-	}
+	// 在执行前，根据最近表现与风险预算，对开仓决策进行仓位大小优化与保护
+	sortedDecisions = at.adjustDecisionsByPerformance(sortedDecisions, ctx, recentPerf, record)
+
+    log.Println("🔄 Execution order (optimized): close first → open later")
+    for i, d := range sortedDecisions {
+        log.Printf("  [%d] %s %s", i+1, d.Symbol, d.Action)
+    }
 	log.Println()
 
 	// 执行决策并记录结果
@@ -522,16 +602,16 @@ func (at *AutoTrader) runCycle() error {
 			Success:   false,
 		}
 
-		if err := at.executeDecisionWithRecord(&d, &actionRecord); err != nil {
-			log.Printf("❌ 执行决策失败 (%s %s): %v", d.Symbol, d.Action, err)
-			actionRecord.Error = err.Error()
-			record.ExecutionLog = append(record.ExecutionLog, fmt.Sprintf("❌ %s %s 失败: %v", d.Symbol, d.Action, err))
-		} else {
-			actionRecord.Success = true
-			record.ExecutionLog = append(record.ExecutionLog, fmt.Sprintf("✓ %s %s 成功", d.Symbol, d.Action))
-			// 成功执行后短暂延迟
-			time.Sleep(1 * time.Second)
-		}
+        if err := at.executeDecisionWithRecord(&d, &actionRecord); err != nil {
+            log.Printf("❌ Failed to execute decision (%s %s): %v", d.Symbol, d.Action, err)
+            actionRecord.Error = err.Error()
+            record.ExecutionLog = append(record.ExecutionLog, fmt.Sprintf("✗ %s %s failed: %v", d.Symbol, d.Action, err))
+        } else {
+            actionRecord.Success = true
+            record.ExecutionLog = append(record.ExecutionLog, fmt.Sprintf("✓ %s %s success", d.Symbol, d.Action))
+            // Short delay after successful execution
+            time.Sleep(1 * time.Second)
+        }
 
 		record.Decisions = append(record.Decisions, actionRecord)
 	}
@@ -542,6 +622,57 @@ func (at *AutoTrader) runCycle() error {
 	}
 
 	return nil
+}
+
+// CheckAndApplyRiskPause updates daily PnL/peak equity and applies pause if limits breach.
+func (at *AutoTrader) CheckAndApplyRiskPause(currentEquity float64) bool {
+    // Initialize day start equity lazily if unset
+    if at.dayStartEquity <= 0 {
+        at.dayStartEquity = currentEquity
+    }
+
+    // Update daily PnL
+    at.dailyPnL = currentEquity - at.dayStartEquity
+
+    // Update peak equity
+    if currentEquity > at.equityPeak {
+        at.equityPeak = currentEquity
+    }
+
+    // Compute daily loss percent
+    dailyLossPct := 0.0
+    if at.dayStartEquity > 0 && at.dailyPnL < 0 {
+        dailyLossPct = (-at.dailyPnL / at.dayStartEquity) * 100.0
+    }
+
+    // Compute drawdown percent from peak
+    drawdownPct := 0.0
+    if at.equityPeak > 0 && currentEquity < at.equityPeak {
+        drawdownPct = ((at.equityPeak - currentEquity) / at.equityPeak) * 100.0
+    }
+
+    // Apply risk pauses based on configuration
+    now := time.Now()
+    pauseTriggered := false
+    // Daily loss pause
+    if at.config.MaxDailyLoss > 0 && dailyLossPct >= at.config.MaxDailyLoss {
+        at.stopUntil = now.Add(at.config.StopTradingTime)
+        pauseTriggered = true
+        log.Printf("🔒 Risk: daily loss %.2f%% ≥ limit %.2f%%, pausing %s",
+            dailyLossPct, at.config.MaxDailyLoss, at.config.StopTradingTime.String())
+    }
+    // Max drawdown pause (account-level)
+    if at.config.MaxDrawdown > 0 && drawdownPct >= at.config.MaxDrawdown {
+        at.stopUntil = now.Add(at.config.StopTradingTime)
+        pauseTriggered = true
+        log.Printf("🔒 Risk: drawdown %.2f%% ≥ limit %.2f%%, pausing %s",
+            drawdownPct, at.config.MaxDrawdown, at.config.StopTradingTime.String())
+    }
+
+    // If we just reset daily PnL earlier in cycle, ensure dayStartEquity updated
+    // Note: dayStartEquity aligns to first observed equity after reset.
+
+    return pauseTriggered
 }
 
 // buildTradingContext 构建交易上下文
@@ -1217,12 +1348,19 @@ func (at *AutoTrader) SetSystemPromptTemplate(templateName string) {
 
 // GetSystemPromptTemplate 获取当前系统提示词模板名称
 func (at *AutoTrader) GetSystemPromptTemplate() string {
-	return at.systemPromptTemplate
+    return at.systemPromptTemplate
+}
+
+// SetRiskParams sets risk thresholds for daily loss and drawdown, and pause duration.
+func (at *AutoTrader) SetRiskParams(maxDailyLoss, maxDrawdown float64, stopDuration time.Duration) {
+    at.config.MaxDailyLoss = maxDailyLoss
+    at.config.MaxDrawdown = maxDrawdown
+    at.config.StopTradingTime = stopDuration
 }
 
 // GetDecisionLogger 获取决策日志记录器
 func (at *AutoTrader) GetDecisionLogger() *logger.DecisionLogger {
-	return at.decisionLogger
+    return at.decisionLogger
 }
 
 // GetStatus 获取系统状态（用于API）
@@ -1248,6 +1386,16 @@ func (at *AutoTrader) GetStatus() map[string]interface{} {
 		"ai_provider":            aiProvider,
 		"system_prompt_template": at.systemPromptTemplate,
 	}
+}
+
+// IsPaused returns whether trading is currently paused by risk control.
+func (at *AutoTrader) IsPaused() bool {
+    return time.Now().Before(at.stopUntil)
+}
+
+// GetDailyPnL returns the current daily PnL value in account currency.
+func (at *AutoTrader) GetDailyPnL() float64 {
+    return at.dailyPnL
 }
 
 // GetAccountInfo 获取账户信息（用于API）
@@ -1428,6 +1576,100 @@ func sortDecisionsByPriority(decisions []decision.Decision) []decision.Decision 
 	return sorted
 }
 
+// adjustDecisionsByPerformance 基于最近胜率、盈亏因子与账户资金对开仓仓位进行调整与保护
+func (at *AutoTrader) adjustDecisionsByPerformance(decisions []decision.Decision, ctx *decision.Context, recent *logger.PerformanceAnalysis, record *logger.DecisionRecord) []decision.Decision {
+    if len(decisions) == 0 {
+        return decisions
+    }
+
+    available := ctx.Account.AvailableBalance
+    feeRate := 0.0004 // 与执行路径保持一致
+
+    // 获取最近记录用于错误保护（避免重复保证金不足等错误）
+    recentRecords, _ := at.decisionLogger.GetLatestRecords(20)
+    hadRecentMarginError := false
+    for _, r := range recentRecords {
+        for _, line := range r.ExecutionLog {
+            if strings.Contains(line, "保证金不足") || strings.Contains(strings.ToLower(line), "margin") {
+                hadRecentMarginError = true
+                break
+            }
+        }
+        if hadRecentMarginError {
+            break
+        }
+    }
+
+    // Recent win rate and profit factor
+    winRate := 0.0
+    profitFactor := 0.0
+    var recentTrades []logger.TradeOutcome
+    if recent != nil {
+        winRate = recent.WinRate
+        profitFactor = recent.ProfitFactor
+        recentTrades = recent.RecentTrades
+    }
+
+    // Iterate and adjust open decisions
+    for i := range decisions {
+        d := &decisions[i]
+        if d.Action != "open_long" && d.Action != "open_short" {
+            continue
+        }
+
+        // Apply cooldown if recent large loss on same symbol/side (reduce size)
+        side := "long"
+        if d.Action == "open_short" {
+            side = "short"
+        }
+        now := time.Now()
+        recentLossCooldown := false
+        for ti := len(recentTrades) - 1; ti >= 0; ti-- {
+            t := recentTrades[ti]
+            if t.Symbol == d.Symbol && t.Side == side {
+                // If within 90 minutes and loss magnitude large, apply cooldown
+                if t.PnLPct <= -15 && now.Sub(t.CloseTime) < 90*time.Minute {
+                    recentLossCooldown = true
+                    record.ExecutionLog = append(record.ExecutionLog, fmt.Sprintf("Cooldown applied for %s %s after recent large loss; size reduced", d.Symbol, strings.ToUpper(side)))
+                }
+                break
+            }
+        }
+
+        base := d.PositionSizeUSD
+        if base <= 0 {
+            // If AI didn’t provide size, keep zero and apply only protections
+            base = 0
+        }
+
+        // 计算调整后的仓位大小
+        newSize := ComputeAdjustedSize(base, d.Leverage, available, feeRate, winRate, profitFactor, float64(d.Confidence), recentLossCooldown)
+
+        // If recent margin errors were observed, preemptively reduce size
+        if hadRecentMarginError && newSize > 0 {
+            newSize = newSize * 0.85
+            record.ExecutionLog = append(record.ExecutionLog, "Recent margin errors detected; preemptively reduced position size")
+        }
+
+        // If margin clamp was applied by ComputeAdjustedSize, record a hint
+        if d.Leverage > 0 {
+            denom := (1.0/float64(d.Leverage) + feeRate)
+            maxSize := available / denom
+            if base > 0 && newSize > maxSize-1e-6 { // 接近上限，视为触发了限制
+                record.ExecutionLog = append(record.ExecutionLog, fmt.Sprintf("Clamped size to avoid margin error; adjusted to %.2f USD", newSize))
+            }
+        }
+
+        if base > 0 && newSize != base {
+            record.ExecutionLog = append(record.ExecutionLog, fmt.Sprintf("Adjusted position size %s %s: %.2f -> %.2f", d.Symbol, strings.ToUpper(side), base, newSize))
+        }
+
+        d.PositionSizeUSD = newSize
+    }
+
+    return decisions
+}
+
 // getCandidateCoins 获取交易员的候选币种列表
 func (at *AutoTrader) getCandidateCoins() ([]decision.CandidateCoin, error) {
 	if len(at.tradingCoins) == 0 {
@@ -1508,16 +1750,16 @@ func (at *AutoTrader) startDrawdownMonitor() {
 		ticker := time.NewTicker(1 * time.Minute) // 每分钟检查一次
 		defer ticker.Stop()
 
-		log.Println("📊 启动持仓回撤监控（每分钟检查一次）")
+        log.Println("📊 Starting drawdown monitor (checks every minute)")
 
 		for {
 			select {
 			case <-ticker.C:
 				at.checkPositionDrawdown()
-			case <-at.stopMonitorCh:
-				log.Println("⏹ 停止持仓回撤监控")
-				return
-			}
+            case <-at.stopMonitorCh:
+                log.Println("⏹ Stop drawdown monitor")
+                return
+            }
 		}
 	}()
 }
@@ -1525,11 +1767,11 @@ func (at *AutoTrader) startDrawdownMonitor() {
 // 检查持仓回撤情况
 func (at *AutoTrader) checkPositionDrawdown() {
 	// 获取当前持仓
-	positions, err := at.trader.GetPositions()
-	if err != nil {
-		log.Printf("❌ 回撤监控：获取持仓失败: %v", err)
-		return
-	}
+    positions, err := at.trader.GetPositions()
+    if err != nil {
+        log.Printf("❌ Drawdown monitor: failed to get positions: %v", err)
+        return
+    }
 
 	for _, pos := range positions {
 		symbol := pos["symbol"].(string)
@@ -1554,70 +1796,80 @@ func (at *AutoTrader) checkPositionDrawdown() {
 			currentPnLPct = ((entryPrice - markPrice) / entryPrice) * float64(leverage) * 100
 		}
 
-		// 构造持仓唯一标识（区分多空）
-		posKey := symbol + "_" + side
+        // Compose unique position key (symbol + side)
+        posKey := symbol + "_" + side
 
-		// 获取该持仓的历史最高收益
-		at.peakPnLCacheMutex.RLock()
-		peakPnLPct, exists := at.peakPnLCache[posKey]
-		at.peakPnLCacheMutex.RUnlock()
+        // Read peak PnL (highest historical profit % for this position)
+        at.peakPnLCacheMutex.RLock()
+        peakPnLPct, exists := at.peakPnLCache[posKey]
+        at.peakPnLCacheMutex.RUnlock()
 
 		if !exists {
-			// 如果没有历史最高记录，使用当前盈亏作为初始值
-			peakPnLPct = currentPnLPct
-			at.UpdatePeakPnL(symbol, side, currentPnLPct)
-		} else {
-			// 更新峰值缓存
-			at.UpdatePeakPnL(symbol, side, currentPnLPct)
-		}
+            // If no historical peak, initialize with current PnL
+            peakPnLPct = currentPnLPct
+            at.UpdatePeakPnL(symbol, side, currentPnLPct)
+        } else {
+            // Update peak cache with latest PnL
+            at.UpdatePeakPnL(symbol, side, currentPnLPct)
+        }
 
-		// 计算回撤（从最高点下跌的幅度）
-		var drawdownPct float64
-		if peakPnLPct > 0 && currentPnLPct < peakPnLPct {
-			drawdownPct = ((peakPnLPct - currentPnLPct) / peakPnLPct) * 100
-		}
+        // Compute drawdown percentage from peak
+        var drawdownPct float64
+        if peakPnLPct > 0 && currentPnLPct < peakPnLPct {
+            drawdownPct = ((peakPnLPct - currentPnLPct) / peakPnLPct) * 100
+        }
 
-		// 检查平仓条件：收益大于5%且回撤超过40%
-		if currentPnLPct > 5.0 && drawdownPct >= 40.0 {
-			log.Printf("🚨 触发回撤平仓条件: %s %s | 当前收益: %.2f%% | 最高收益: %.2f%% | 回撤: %.2f%%",
-				symbol, side, currentPnLPct, peakPnLPct, drawdownPct)
+        // Close condition: profit > 5% and drawdown >= 40%, sustained for N checks
+        if currentPnLPct > 5.0 && drawdownPct >= 40.0 {
+            at.drawdownBreachCount[posKey]++
+            remaining := at.drawdownBreachWindow - at.drawdownBreachCount[posKey]
+            if remaining > 0 {
+                log.Printf("🚨 Drawdown breach %s %s: profit %.2f%% | peak %.2f%% | drawdown %.2f%% (waiting %d more checks)",
+                    symbol, side, currentPnLPct, peakPnLPct, drawdownPct, remaining)
+            } else {
+                log.Printf("🚨 Sustained drawdown triggered close: %s %s | profit: %.2f%% | peak: %.2f%% | drawdown: %.2f%%",
+                    symbol, side, currentPnLPct, peakPnLPct, drawdownPct)
 
-			// 执行平仓
-			if err := at.emergencyClosePosition(symbol, side); err != nil {
-				log.Printf("❌ 回撤平仓失败 (%s %s): %v", symbol, side, err)
-			} else {
-				log.Printf("✅ 回撤平仓成功: %s %s", symbol, side)
-				// 平仓后清理该持仓的缓存
-				at.ClearPeakPnLCache(symbol, side)
-			}
-		} else if currentPnLPct > 5.0 {
-			// 记录接近平仓条件的情况（用于调试）
-			log.Printf("📊 回撤监控: %s %s | 收益: %.2f%% | 最高: %.2f%% | 回撤: %.2f%%",
-				symbol, side, currentPnLPct, peakPnLPct, drawdownPct)
-		}
+                if err := at.emergencyClosePosition(symbol, side); err != nil {
+                    log.Printf("❌ Emergency close failed (%s %s): %v", symbol, side, err)
+                } else {
+                    log.Printf("✅ Emergency close succeeded: %s %s", symbol, side)
+                    // Clear caches and counters after close
+                    at.ClearPeakPnLCache(symbol, side)
+                    at.drawdownBreachCount[posKey] = 0
+                }
+            }
+        } else {
+            // Reset breach counter when condition not met
+            at.drawdownBreachCount[posKey] = 0
+            if currentPnLPct > 5.0 {
+                log.Printf("📊 Drawdown monitor: %s %s | profit: %.2f%% | peak: %.2f%% | drawdown: %.2f%%",
+                    symbol, side, currentPnLPct, peakPnLPct, drawdownPct)
+            }
+        }
 	}
 }
 
 // 紧急平仓函数
 func (at *AutoTrader) emergencyClosePosition(symbol, side string) error {
-	switch side {
-	case "long":
-		order, err := at.trader.CloseLong(symbol, 0) // 0 = 全部平仓
-		if err != nil {
-			return err
-		}
-		log.Printf("✅ 紧急平多仓成功，订单ID: %v", order["orderId"])
-	case "short":
-		order, err := at.trader.CloseShort(symbol, 0) // 0 = 全部平仓
-		if err != nil {
-			return err
-		}
-		log.Printf("✅ 紧急平空仓成功，订单ID: %v", order["orderId"])
-	default:
-		return fmt.Errorf("未知的持仓方向: %s", side)
-	}
+    switch side {
+    case "long":
+        order, err := at.trader.CloseLong(symbol, 0) // 0 = 全部平仓
+        if err != nil {
+            return err
+        }
+        log.Printf("✅ Emergency long close succeeded, order ID: %v", order["orderId"])
+    case "short":
+        order, err := at.trader.CloseShort(symbol, 0) // 0 = 全部平仓
+        if err != nil {
+            return err
+        }
+        log.Printf("✅ Emergency short close succeeded, order ID: %v", order["orderId"])
+    default:
+        return fmt.Errorf("invalid side: %s", side)
+    }
 
-	return nil
+    return nil
 }
 
 // GetPeakPnLCache 获取最高收益缓存

@@ -453,115 +453,36 @@ func GetFundingRate(symbol string, testnet bool) (float64, error) {
 
 // Format 格式化输出市场数据
 func Format(data *Data) string {
-	var sb strings.Builder
+    var sb strings.Builder
 
-	// 使用动态精度格式化价格
-	priceStr := formatPriceWithDynamicPrecision(data.CurrentPrice)
-	sb.WriteString(fmt.Sprintf("current_price = %s, current_ema20 = %.3f, current_macd = %.3f, current_rsi (7 period) = %.3f\n\n",
-		priceStr, data.CurrentEMA20, data.CurrentMACD, data.CurrentRSI7))
+    // Compact core metrics only: trend (EMA20), momentum (MACD), volatility (ATR14), RSI14
+    priceStr := formatPriceWithDynamicPrecision(data.CurrentPrice)
+    rsi14 := 0.0
+    if data.IntradaySeries != nil && len(data.IntradaySeries.RSI14Values) > 0 {
+        rsi14 = data.IntradaySeries.RSI14Values[len(data.IntradaySeries.RSI14Values)-1]
+    }
+    atr14 := 0.0
+    if data.LongerTermContext != nil {
+        atr14 = data.LongerTermContext.ATR14
+    }
 
-	sb.WriteString(fmt.Sprintf("In addition, here is the latest %s open interest and funding rate for perps:\n\n",
-		data.Symbol))
+    sb.WriteString(fmt.Sprintf(
+        "price=%s | ema20=%.3f | macd=%.3f | rsi14=%.3f | atr14=%.3f\n",
+        priceStr, data.CurrentEMA20, data.CurrentMACD, rsi14, atr14,
+    ))
 
-	if data.OpenInterest != nil {
-		// 使用动态精度格式化 OI 数据
-		oiLatestStr := formatPriceWithDynamicPrecision(data.OpenInterest.Latest)
-		oiAverageStr := formatPriceWithDynamicPrecision(data.OpenInterest.Average)
-		sb.WriteString(fmt.Sprintf("Open Interest: Latest: %s Average: %s\n\n",
-			oiLatestStr, oiAverageStr))
-	}
+    // Minimal OI and funding summary only if available
+    if data.OpenInterest != nil || data.FundingRate != 0 {
+        sb.WriteString("metrics: ")
+        if data.OpenInterest != nil {
+            oiLatestStr := formatPriceWithDynamicPrecision(data.OpenInterest.Latest)
+            oiAverageStr := formatPriceWithDynamicPrecision(data.OpenInterest.Average)
+            sb.WriteString(fmt.Sprintf("oi_latest=%s oi_avg=%s ", oiLatestStr, oiAverageStr))
+        }
+        sb.WriteString(fmt.Sprintf("funding=%.2e\n", data.FundingRate))
+    }
 
-	sb.WriteString(fmt.Sprintf("Funding Rate: %.2e\n\n", data.FundingRate))
-
-	// 添加深度数据分析
-	if data.DepthData != nil {
-		sb.WriteString("Order Book Depth Analysis:\n\n")
-		sb.WriteString(fmt.Sprintf("Best Bid: %.4f, Best Ask: %.4f, Spread: %.4f (%.2f%%)\n\n",
-			data.DepthData.Bids[0].Price, data.DepthData.Asks[0].Price, data.DepthData.Spread,
-			(data.DepthData.Spread/data.DepthData.MidPrice)*100))
-		
-		// 分析深度数据
-		depthAnalysis := AnalyzeDepthData(data.DepthData)
-		if depthAnalysis != nil {
-			sb.WriteString(fmt.Sprintf("Bid Depth: %.2f USDT, Ask Depth: %.2f USDT, Bid/Ask Ratio: %.2f\n\n",
-				depthAnalysis.BidDepth, depthAnalysis.AskDepth, depthAnalysis.BidAskRatio))
-			
-			sb.WriteString(fmt.Sprintf("Large Bid Orders: %d, Large Ask Orders: %d\n\n",
-				depthAnalysis.LargeBidOrders, depthAnalysis.LargeAskOrders))
-			
-			if len(depthAnalysis.SupportLevels) > 0 {
-				sb.WriteString("Support Levels: ")
-				for i, level := range depthAnalysis.SupportLevels {
-					if i > 0 {
-						sb.WriteString(", ")
-					}
-					sb.WriteString(fmt.Sprintf("%.4f", level))
-				}
-				sb.WriteString("\n\n")
-			}
-			
-			if len(depthAnalysis.ResistanceLevels) > 0 {
-				sb.WriteString("Resistance Levels: ")
-				for i, level := range depthAnalysis.ResistanceLevels {
-					if i > 0 {
-						sb.WriteString(", ")
-					}
-					sb.WriteString(fmt.Sprintf("%.4f", level))
-				}
-				sb.WriteString("\n\n")
-			}
-			
-			sb.WriteString(fmt.Sprintf("Liquidity Score: %.1f/100, Market Sentiment: %s\n\n",
-				depthAnalysis.LiquidityScore, depthAnalysis.MarketSentiment))
-		}
-	}
-
-	if data.IntradaySeries != nil {
-		sb.WriteString("Intraday series (3‑minute intervals, oldest → latest):\n\n")
-
-		if len(data.IntradaySeries.MidPrices) > 0 {
-			sb.WriteString(fmt.Sprintf("Mid prices: %s\n\n", formatFloatSlice(data.IntradaySeries.MidPrices)))
-		}
-
-		if len(data.IntradaySeries.EMA20Values) > 0 {
-			sb.WriteString(fmt.Sprintf("EMA indicators (20‑period): %s\n\n", formatFloatSlice(data.IntradaySeries.EMA20Values)))
-		}
-
-		if len(data.IntradaySeries.MACDValues) > 0 {
-			sb.WriteString(fmt.Sprintf("MACD indicators: %s\n\n", formatFloatSlice(data.IntradaySeries.MACDValues)))
-		}
-
-		if len(data.IntradaySeries.RSI7Values) > 0 {
-			sb.WriteString(fmt.Sprintf("RSI indicators (7‑Period): %s\n\n", formatFloatSlice(data.IntradaySeries.RSI7Values)))
-		}
-
-		if len(data.IntradaySeries.RSI14Values) > 0 {
-			sb.WriteString(fmt.Sprintf("RSI indicators (14‑Period): %s\n\n", formatFloatSlice(data.IntradaySeries.RSI14Values)))
-		}
-	}
-
-	if data.LongerTermContext != nil {
-		sb.WriteString("Longer‑term context (4‑hour timeframe):\n\n")
-
-		sb.WriteString(fmt.Sprintf("20‑Period EMA: %.3f vs. 50‑Period EMA: %.3f\n\n",
-			data.LongerTermContext.EMA20, data.LongerTermContext.EMA50))
-
-		sb.WriteString(fmt.Sprintf("3‑Period ATR: %.3f vs. 14‑Period ATR: %.3f\n\n",
-			data.LongerTermContext.ATR3, data.LongerTermContext.ATR14))
-
-		sb.WriteString(fmt.Sprintf("Current Volume: %.3f vs. Average Volume: %.3f\n\n",
-			data.LongerTermContext.CurrentVolume, data.LongerTermContext.AverageVolume))
-
-		if len(data.LongerTermContext.MACDValues) > 0 {
-			sb.WriteString(fmt.Sprintf("MACD indicators: %s\n\n", formatFloatSlice(data.LongerTermContext.MACDValues)))
-		}
-
-		if len(data.LongerTermContext.RSI14Values) > 0 {
-			sb.WriteString(fmt.Sprintf("RSI indicators (14‑Period): %s\n\n", formatFloatSlice(data.LongerTermContext.RSI14Values)))
-		}
-	}
-
-	return sb.String()
+    return sb.String()
 }
 
 // formatPriceWithDynamicPrecision 根据价格区间动态选择精度

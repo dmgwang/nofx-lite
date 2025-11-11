@@ -6,7 +6,7 @@ import { execSync } from 'child_process'
 let version = process.env.VITE_APP_VERSION
 if (!version) {
     try {
-        version = execSync('git rev-parse --short HEAD').toString().trim()
+        version = execSync('git rev-parse --short=5 HEAD').toString().trim()
     } catch {
         version = 'dev'
     }

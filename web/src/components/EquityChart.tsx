@@ -309,7 +309,7 @@ export function EquityChart({ traderId }: EquityChartProps) {
             fontFamily: 'monospace',
           }}
         >
-          NOFX
+          NOFX-Lite
         </div>
         <ResponsiveContainer width="100%" height={280}>
           <LineChart

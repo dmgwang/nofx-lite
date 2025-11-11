@@ -493,17 +493,7 @@ export const translations = {
         aboutNofx: 'About NOFX-Lite',
         whatIsNofx: 'What is NOFX-Lite?',
         nofxNotAnotherBot:
-            "NOFX-Lite is forked from NOFX, a transparent, trustworthy open source OS, providing a unified 'decision-risk-execution' layer, supporting all asset classes.",
-        nofxDescription1:
-            'a transparent, trustworthy open source OS that provides a unified',
-        nofxDescription2:
-            "'decision-risk-execution' layer, supporting all asset classes.",
-        nofxDescription3:
-            'Starting with crypto markets (24/7, high volatility perfect testing ground), future expansion to stocks, futures, forex. Core: open architecture, AI',
-        nofxDescription4:
-            'Darwinism (multi-agent self-competition, strategy evolution), CodeFi',
-        nofxDescription5:
-            'flywheel (developers get point rewards for PR contributions).',
+            "NOFX-Lite is forked from NOFX",
         youFullControl: 'You 100% Control',
         fullControlDesc: 'Complete control over AI prompts and funds',
         startupMessages1: 'Starting automated trading system...',
@@ -1026,14 +1016,7 @@ export const translations = {
         // About Section
         aboutNofx: '关于 NOFX-Lite',
         whatIsNofx: '什么是 NOFX-Lite？',
-        nofxNotAnotherBot: "NOFX-Lite Forked 自 NOFX，是一个透明、可信任的开源 OS，提供统一的 '决策-风险-执行'",
-        nofxDescription1: "一个透明、可信任的开源 OS，提供统一的 '决策-风险-执行'",
-        nofxDescription2: '层，支持所有资产类别。',
-        nofxDescription3:
-            '从加密市场起步（24/7、高波动性完美测试场），未来扩展到股票、期货、外汇。核心：开放架构、AI',
-        nofxDescription4:
-            '达尔文主义（多代理自竞争、策略进化）、CodeFi 飞轮（开发者 PR',
-        nofxDescription5: '贡献获积分奖励）。',
+        nofxNotAnotherBot: "NOFX-Lite Forked 自 NOFX",
         youFullControl: '你 100% 掌控',
         fullControlDesc: '完全掌控 AI 提示词和资金',
         startupMessages1: '启动自动交易系统...',
@@ -1043,7 +1026,7 @@ export const translations = {
 
         importantRiskWarning: '重要风险提示',
         riskWarningText:
-            'dev 分支不稳定，勿用无法承受损失的资金。NOFX 非托管，无官方策略。交易有风险，投资需谨慎。',
+            'dev 分支不稳定，勿用无法承受损失的资金。NOFX-Lite 非托管，无官方策略。交易有风险，投资需谨慎。',
 
         // Community Section (testimonials are kept as-is since they are quotes)
 

@@ -54,16 +54,6 @@ export default function AboutSection({ language }: AboutSectionProps) {
                             style={{ color: 'var(--text-secondary)' }}
                         >
                             {t('nofxNotAnotherBot', language)}{' '}
-                            {t('nofxDescription1', language)}{' '}
-                            {t('nofxDescription2', language)}
-                        </p>
-                        <p
-                            className="text-lg leading-relaxed"
-                            style={{ color: 'var(--text-secondary)' }}
-                        >
-                            {t('nofxDescription3', language)}{' '}
-                            {t('nofxDescription4', language)}{' '}
-                            {t('nofxDescription5', language)}
                         </p>
                         <motion.div
                             className="flex items-center gap-3 pt-4"

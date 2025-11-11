@@ -279,7 +279,7 @@ export function ComparisonChart({ traders }: ComparisonChartProps) {
             fontFamily: 'monospace',
           }}
         >
-          NOFX
+          NOFX-Lite
         </div>
         <ResponsiveContainer width="100%" height={520}>
           <LineChart

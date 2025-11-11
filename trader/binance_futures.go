@@ -892,6 +892,16 @@ func (t *FuturesTrader) FormatQuantity(symbol string, quantity float64) (string,
 	return fmt.Sprintf(format, quantity), nil
 }
 
+// CancelStopLossOrders 仅取消止损单（取消所有方向的止损单）
+func (t *FuturesTrader) CancelStopLossOrders(symbol string) error {
+	return t.CancelStopLossOrdersBySide(symbol, "")
+}
+
+// CancelTakeProfitOrders 仅取消止盈单（取消所有方向的止盈单）
+func (t *FuturesTrader) CancelTakeProfitOrders(symbol string) error {
+	return t.CancelTakeProfitOrdersBySide(symbol, "")
+}
+
 // 辅助函数
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && stringContains(s, substr)
@@ -904,15 +914,4 @@ func stringContains(s, substr string) bool {
 		}
 	}
 	return false
-}
-
-// 为了保持向后兼容，保留旧的无方向版本
-// CancelStopLossOrders 仅取消止损单（取消所有方向的止损单）
-func (t *FuturesTrader) CancelStopLossOrders(symbol string) error {
-	return t.CancelStopLossOrdersBySide(symbol, "")
-}
-
-// CancelTakeProfitOrders 仅取消止盈单（取消所有方向的止盈单）
-func (t *FuturesTrader) CancelTakeProfitOrders(symbol string) error {
-	return t.CancelTakeProfitOrdersBySide(symbol, "")
 }

@@ -29,11 +29,14 @@ type DecisionRecord struct {
 
 // AccountSnapshot 账户状态快照
 type AccountSnapshot struct {
-	TotalBalance          float64 `json:"total_balance"`
-	AvailableBalance      float64 `json:"available_balance"`
-	TotalUnrealizedProfit float64 `json:"total_unrealized_profit"`
-	PositionCount         int     `json:"position_count"`
-	MarginUsedPct         float64 `json:"margin_used_pct"`
+    TotalBalance          float64 `json:"total_balance"`
+    AvailableBalance      float64 `json:"available_balance"`
+    TotalUnrealizedProfit float64 `json:"total_unrealized_profit"`
+    PositionCount         int     `json:"position_count"`
+    MarginUsedPct         float64 `json:"margin_used_pct"`
+    // Risk context
+    DayStartEquity        float64 `json:"day_start_equity"`
+    EquityPeak            float64 `json:"equity_peak"`
 }
 
 // PositionSnapshot 持仓快照
@@ -76,6 +79,13 @@ func NewDecisionLogger(logDir string) *DecisionLogger {
 	// 确保日志目录存在（使用安全权限：只有所有者可访问）
 	if err := os.MkdirAll(logDir, 0700); err != nil {
 		fmt.Printf("⚠ 创建日志目录失败: %v\n", err)
+		// 如果目录创建失败，尝试创建父目录
+		parentDir := filepath.Dir(logDir)
+		if parentDir != "." && parentDir != "/" {
+			if err := os.MkdirAll(parentDir, 0755); err != nil {
+				fmt.Printf("⚠ 创建父目录失败: %v\n", err)
+			}
+		}
 	}
 
 	// 强制设置目录权限（即使目录已存在）- 确保安全
@@ -323,10 +333,10 @@ type SymbolPerformance struct {
 
 // AnalyzePerformance 分析最近N个周期的交易表现
 func (l *DecisionLogger) AnalyzePerformance(lookbackCycles int) (*PerformanceAnalysis, error) {
-	records, err := l.GetLatestRecords(lookbackCycles)
-	if err != nil {
-		return nil, fmt.Errorf("读取历史记录失败: %w", err)
-	}
+    records, err := l.GetLatestRecords(lookbackCycles)
+    if err != nil {
+        return nil, fmt.Errorf("failed to read historical records: %w", err)
+    }
 
 	if len(records) == 0 {
 		return &PerformanceAnalysis{
@@ -667,70 +677,70 @@ func (l *DecisionLogger) AnalyzePerformance(lookbackCycles int) (*PerformanceAna
 	return analysis, nil
 }
 
-// calculateSharpeRatio 计算夏普比率
-// 基于账户净值的变化计算风险调整后收益
+// calculateSharpeRatio computes a rolling, normalized Sharpe ratio.
+// It uses changes in TotalPnL (stored in TotalUnrealizedProfit) normalized by prior equity,
+// which naturally excludes external deposits/withdrawals from the return series.
+// Returns a non-annualized Sharpe ratio over the selected window.
 func (l *DecisionLogger) calculateSharpeRatio(records []*DecisionRecord) float64 {
-	if len(records) < 2 {
-		return 0.0
-	}
+    n := len(records)
+    if n < 2 {
+        return 0.0
+    }
 
-	// 提取每个周期的账户净值
-	// 注意：TotalBalance字段实际存储的是TotalEquity（账户总净值）
-	// TotalUnrealizedProfit字段实际存储的是TotalPnL（相对初始余额的盈亏）
-	var equities []float64
-	for _, record := range records {
-		// 直接使用TotalBalance，因为它已经是完整的账户净值
-		equity := record.AccountState.TotalBalance
-		if equity > 0 {
-			equities = append(equities, equity)
-		}
-	}
+    // Rolling window length (in cycles)
+    const window = 60
+    start := 1
+    if n > window {
+        start = n - window
+    }
 
-	if len(equities) < 2 {
-		return 0.0
-	}
+    var returns []float64
+    for i := start; i < n; i++ {
+        prev := records[i-1].AccountState
+        curr := records[i].AccountState
+        prevEquity := prev.TotalBalance
+        if prevEquity <= 0 {
+            continue
+        }
 
-	// 计算周期收益率（period returns）
-	var returns []float64
-	for i := 1; i < len(equities); i++ {
-		if equities[i-1] > 0 {
-			periodReturn := (equities[i] - equities[i-1]) / equities[i-1]
-			returns = append(returns, periodReturn)
-		}
-	}
+        // Delta PnL; field TotalUnrealizedProfit stores TotalPnL (relative to initial balance)
+        deltaPnL := curr.TotalUnrealizedProfit - prev.TotalUnrealizedProfit
+        periodReturn := deltaPnL / prevEquity
 
-	if len(returns) == 0 {
-		return 0.0
-	}
+        if math.IsNaN(periodReturn) || math.IsInf(periodReturn, 0) {
+            continue
+        }
+        returns = append(returns, periodReturn)
+    }
 
-	// 计算平均收益率
-	sumReturns := 0.0
-	for _, r := range returns {
-		sumReturns += r
-	}
-	meanReturn := sumReturns / float64(len(returns))
+    if len(returns) == 0 {
+        return 0.0
+    }
 
-	// 计算收益率标准差
-	sumSquaredDiff := 0.0
-	for _, r := range returns {
-		diff := r - meanReturn
-		sumSquaredDiff += diff * diff
-	}
-	variance := sumSquaredDiff / float64(len(returns))
-	stdDev := math.Sqrt(variance)
+    // Mean of returns
+    sum := 0.0
+    for _, r := range returns {
+        sum += r
+    }
+    mean := sum / float64(len(returns))
 
-	// 避免除以零
-	if stdDev == 0 {
-		if meanReturn > 0 {
-			return 999.0 // 无波动的正收益
-		} else if meanReturn < 0 {
-			return -999.0 // 无波动的负收益
-		}
-		return 0.0
-	}
+    // Standard deviation of returns
+    var sumSq float64
+    for _, r := range returns {
+        d := r - mean
+        sumSq += d * d
+    }
+    std := math.Sqrt(sumSq / float64(len(returns)))
 
-	// 计算夏普比率（假设无风险利率为0）
-	// 注：直接返回周期级别的夏普比率（非年化），正常范围 -2 到 +2
-	sharpeRatio := meanReturn / stdDev
-	return sharpeRatio
+    // Avoid division by zero
+    if std == 0 {
+        if mean > 0 {
+            return 999.0
+        } else if mean < 0 {
+            return -999.0
+        }
+        return 0.0
+    }
+
+    return mean / std
 }

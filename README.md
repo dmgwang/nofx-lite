@@ -9,6 +9,12 @@
 
 > ⚠️ **Risk Warning**: This system is experimental. AI auto-trading carries significant risks. Strongly recommended for learning/research purposes or testing with small amounts only!
 
+## 🆕 Recent Enhancements
+
+- Performance-aware pre-decision analysis: the engine summarizes recent cycles (win rate, profit factor, trade count) and feeds this context to the AI before each decision.
+- Position sizing optimization: open orders adjust size based on recent performance, confidence, and margin safety; a cooldown reduces size after recent large losses on the same symbol/side.
+- Unit tests added under `test/` for sizing adjustments.
+
 ## 🚀 Multi-Exchange Support
 
 NOFX-Lite supports **three major exchanges**: Binance, Hyperliquid, and Aster DEX!
