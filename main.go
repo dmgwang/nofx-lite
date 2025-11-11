@@ -166,6 +166,21 @@ func main() {
 		dbPath = os.Args[1]
 	}
 
+	// 🔧 Docker容器环境检查：如果在容器中运行，使用/data目录
+	if _, err := os.Stat("/app/data"); err == nil {
+		dbPath = "/app/data/config.db"
+		log.Printf("🐳 检测到Docker容器环境，使用数据卷路径: %s", dbPath)
+	}
+
+	// 🔧 Docker容器环境检查：确保数据库路径是文件而不是目录
+	if fileInfo, err := os.Stat(dbPath); err == nil && fileInfo.IsDir() {
+		log.Printf("⚠️  检测到数据库路径 %s 是一个目录，正在删除...", dbPath)
+		if err := os.RemoveAll(dbPath); err != nil {
+			log.Fatalf("❌ 无法删除数据库目录 %s: %v", dbPath, err)
+		}
+		log.Printf("✅ 已删除数据库目录 %s", dbPath)
+	}
+
 	// 读取配置文件
 	configFile, err := loadConfigFile()
 	if err != nil {

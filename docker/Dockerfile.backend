@@ -62,6 +62,9 @@ COPY --from=ta-lib-builder /usr/local /usr/local
 WORKDIR /app
 COPY --from=backend-builder /app/nofx-lite .
 
+# 🔧 创建数据目录并设置权限
+RUN mkdir -p /app/data && chmod 777 /app/data
+
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
