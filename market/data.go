@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"math"
 	"net/http"
 	"strconv"
@@ -98,6 +99,14 @@ func Get(symbol string, testnet ...bool) (*Data, error) {
 	// 获取Funding Rate
 	fundingRate, _ := GetFundingRate(symbol, useTestnet)
 
+	// 获取深度数据 (获取10档深度数据)
+	depthData, err := GetDepthData(symbol, useTestnet)
+	if err != nil {
+		// 深度数据获取失败不影响整体，记录错误并继续
+		log.Printf("获取深度数据失败: %v", err)
+		depthData = nil
+	}
+
 	// 计算日内系列数据
 	intradayData := calculateIntradaySeries(klines3m)
 
@@ -114,6 +123,7 @@ func Get(symbol string, testnet ...bool) (*Data, error) {
 		CurrentRSI7:       currentRSI7,
 		OpenInterest:      oiData,
 		FundingRate:       fundingRate,
+		DepthData:         depthData,
 		IntradaySeries:    intradayData,
 		LongerTermContext: longerTermData,
 	}, nil
@@ -463,6 +473,49 @@ func Format(data *Data) string {
 
 	sb.WriteString(fmt.Sprintf("Funding Rate: %.2e\n\n", data.FundingRate))
 
+	// 添加深度数据分析
+	if data.DepthData != nil {
+		sb.WriteString("Order Book Depth Analysis:\n\n")
+		sb.WriteString(fmt.Sprintf("Best Bid: %.4f, Best Ask: %.4f, Spread: %.4f (%.2f%%)\n\n",
+			data.DepthData.Bids[0].Price, data.DepthData.Asks[0].Price, data.DepthData.Spread,
+			(data.DepthData.Spread/data.DepthData.MidPrice)*100))
+		
+		// 分析深度数据
+		depthAnalysis := AnalyzeDepthData(data.DepthData)
+		if depthAnalysis != nil {
+			sb.WriteString(fmt.Sprintf("Bid Depth: %.2f USDT, Ask Depth: %.2f USDT, Bid/Ask Ratio: %.2f\n\n",
+				depthAnalysis.BidDepth, depthAnalysis.AskDepth, depthAnalysis.BidAskRatio))
+			
+			sb.WriteString(fmt.Sprintf("Large Bid Orders: %d, Large Ask Orders: %d\n\n",
+				depthAnalysis.LargeBidOrders, depthAnalysis.LargeAskOrders))
+			
+			if len(depthAnalysis.SupportLevels) > 0 {
+				sb.WriteString("Support Levels: ")
+				for i, level := range depthAnalysis.SupportLevels {
+					if i > 0 {
+						sb.WriteString(", ")
+					}
+					sb.WriteString(fmt.Sprintf("%.4f", level))
+				}
+				sb.WriteString("\n\n")
+			}
+			
+			if len(depthAnalysis.ResistanceLevels) > 0 {
+				sb.WriteString("Resistance Levels: ")
+				for i, level := range depthAnalysis.ResistanceLevels {
+					if i > 0 {
+						sb.WriteString(", ")
+					}
+					sb.WriteString(fmt.Sprintf("%.4f", level))
+				}
+				sb.WriteString("\n\n")
+			}
+			
+			sb.WriteString(fmt.Sprintf("Liquidity Score: %.1f/100, Market Sentiment: %s\n\n",
+				depthAnalysis.LiquidityScore, depthAnalysis.MarketSentiment))
+		}
+	}
+
 	if data.IntradaySeries != nil {
 		sb.WriteString("Intraday series (3‑minute intervals, oldest → latest):\n\n")
 
@@ -574,4 +627,185 @@ func parseFloat(v interface{}) (float64, error) {
 	default:
 		return 0, fmt.Errorf("unsupported type: %T", v)
 	}
+}
+
+// GetDepthData 获取深度数据
+func GetDepthData(symbol string, testnet bool) (*DepthData, error) {
+	// 使用统一的APIClient
+	apiClient := NewAPIClient()
+	
+	// 获取10档深度数据 (平衡数据完整性和API调用效率)
+	depthData, err := apiClient.GetOrderBookData(symbol, 10)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get depth data: %w", err)
+	}
+	
+	return depthData, nil
+}
+
+// AnalyzeDepthData 分析深度数据，返回分析结果
+func AnalyzeDepthData(depthData *DepthData) *DepthAnalysis {
+	if depthData == nil || len(depthData.Bids) == 0 || len(depthData.Asks) == 0 {
+		return nil
+	}
+
+	analysis := &DepthAnalysis{
+		Symbol:           depthData.Symbol,
+		Timestamp:        time.Now(),
+		BidDepth:         0,
+		AskDepth:         0,
+		BidAskRatio:      0,
+		LargeBidOrders:   0,
+		LargeAskOrders:   0,
+		SupportLevels:    []float64{},
+		ResistanceLevels: []float64{},
+		LiquidityScore:   0,
+		MarketSentiment:  "neutral",
+	}
+
+	// 计算买盘和卖盘总深度
+	var bidQuantities []float64
+	var askQuantities []float64
+
+	for _, bid := range depthData.Bids {
+		analysis.BidDepth += bid.Price * bid.Quantity
+		bidQuantities = append(bidQuantities, bid.Quantity)
+	}
+
+	for _, ask := range depthData.Asks {
+		analysis.AskDepth += ask.Price * ask.Quantity
+		askQuantities = append(askQuantities, ask.Quantity)
+	}
+
+	// 计算买卖盘比例
+	if analysis.AskDepth > 0 {
+		analysis.BidAskRatio = analysis.BidDepth / analysis.AskDepth
+	}
+
+	// 计算平均数量，用于识别大单
+	avgBidQuantity := 0.0
+	if len(bidQuantities) > 0 {
+		sum := 0.0
+		for _, q := range bidQuantities {
+			sum += q
+		}
+		avgBidQuantity = sum / float64(len(bidQuantities))
+	}
+
+	avgAskQuantity := 0.0
+	if len(askQuantities) > 0 {
+		sum := 0.0
+		for _, q := range askQuantities {
+			sum += q
+		}
+		avgAskQuantity = sum / float64(len(askQuantities))
+	}
+
+	// 识别大订单 (数量 > 平均值 * 2)
+	largeBidThreshold := avgBidQuantity * 2
+	largeAskThreshold := avgAskQuantity * 2
+
+	for _, bid := range depthData.Bids {
+		if bid.Quantity > largeBidThreshold {
+			analysis.LargeBidOrders++
+		}
+	}
+
+	for _, ask := range depthData.Asks {
+		if ask.Quantity > largeAskThreshold {
+			analysis.LargeAskOrders++
+		}
+	}
+
+	// 识别支撑和阻力位
+	// 支撑位：买盘密集区域 (连续3个档位数量递增)
+	for i := 0; i < len(depthData.Bids)-2; i++ {
+		if depthData.Bids[i].Quantity < depthData.Bids[i+1].Quantity &&
+			depthData.Bids[i+1].Quantity < depthData.Bids[i+2].Quantity {
+			analysis.SupportLevels = append(analysis.SupportLevels, depthData.Bids[i].Price)
+		}
+	}
+
+	// 阻力位：卖盘密集区域 (连续3个档位数量递增)
+	for i := 0; i < len(depthData.Asks)-2; i++ {
+		if depthData.Asks[i].Quantity < depthData.Asks[i+1].Quantity &&
+			depthData.Asks[i+1].Quantity < depthData.Asks[i+2].Quantity {
+			analysis.ResistanceLevels = append(analysis.ResistanceLevels, depthData.Asks[i].Price)
+		}
+	}
+
+	// 如果没有找到支撑/阻力位，使用简单的阈值判断
+	if len(analysis.SupportLevels) == 0 {
+		for _, bid := range depthData.Bids {
+			if bid.Quantity > avgBidQuantity * 1.5 { // 数量超过平均值1.5倍
+				analysis.SupportLevels = append(analysis.SupportLevels, bid.Price)
+			}
+		}
+	}
+
+	if len(analysis.ResistanceLevels) == 0 {
+		for _, ask := range depthData.Asks {
+			if ask.Quantity > avgAskQuantity * 1.5 { // 数量超过平均值1.5倍
+				analysis.ResistanceLevels = append(analysis.ResistanceLevels, ask.Price)
+			}
+		}
+	}
+
+	// 计算流动性评分 (0-100)
+	// 基于：1. 总深度 2. 买卖盘平衡性 3. 价差大小
+	liquidityScore := 0.0
+
+	// 1. 总深度评分 (40分)
+	totalDepth := analysis.BidDepth + analysis.AskDepth
+	if totalDepth > 1000000 { // 深度很好
+		liquidityScore += 40
+	} else if totalDepth > 100000 { // 深度中等
+		liquidityScore += 25
+	} else if totalDepth > 10000 { // 深度一般
+		liquidityScore += 15
+	} else if totalDepth > 1000 { // 深度较差
+		liquidityScore += 5
+	} else { // 深度很差
+		liquidityScore += 0
+	}
+
+	// 2. 买卖盘平衡性评分 (30分)
+	if analysis.BidAskRatio >= 0.8 && analysis.BidAskRatio <= 1.2 {
+		liquidityScore += 30 // 非常平衡
+	} else if analysis.BidAskRatio >= 0.6 && analysis.BidAskRatio <= 1.4 {
+		liquidityScore += 20 // 比较平衡
+	} else if analysis.BidAskRatio >= 0.4 && analysis.BidAskRatio <= 2.5 {
+		liquidityScore += 10 // 不太平衡
+	} else {
+		liquidityScore += 5 // 很不平衡
+	}
+
+	// 3. 价差评分 (30分)
+	if depthData.Spread > 0 {
+		spreadPercentage := (depthData.Spread / depthData.MidPrice) * 100
+		if spreadPercentage < 0.1 { // 价差极小
+			liquidityScore += 30
+		} else if spreadPercentage < 0.5 { // 价差小
+			liquidityScore += 20
+		} else if spreadPercentage < 1.0 { // 价差中等
+			liquidityScore += 10
+		} else if spreadPercentage < 5.0 { // 价差较大
+			liquidityScore += 5
+		} else { // 价差很大
+			liquidityScore += 0
+		}
+	}
+
+	analysis.LiquidityScore = math.Min(100, liquidityScore)
+
+	// 判断市场情绪 - 放宽条件以提高准确性
+	if analysis.BidAskRatio > 1.2 && analysis.LargeBidOrders >= analysis.LargeAskOrders {
+		analysis.MarketSentiment = "bullish"
+	} else if analysis.BidAskRatio < 0.8 && analysis.LargeAskOrders >= analysis.LargeBidOrders {
+		analysis.MarketSentiment = "bearish"
+	} else {
+		analysis.MarketSentiment = "neutral"
+	}
+
+	return analysis
 }

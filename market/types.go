@@ -13,6 +13,7 @@ type Data struct {
 	CurrentRSI7       float64
 	OpenInterest      *OIData
 	FundingRate       float64
+	DepthData         *DepthData // 深度数据
 	IntradaySeries    *IntradayData
 	LongerTermContext *LongerTermData
 }
@@ -21,6 +22,44 @@ type Data struct {
 type OIData struct {
 	Latest  float64
 	Average float64
+}
+
+// DepthData 深度数据
+// 包含买卖盘信息，用于分析市场流动性和情绪
+// Bid/Ask 数据按照价格从高到低排序
+// 0索引通常是最佳买卖价格
+// 注意: 价格可能为0，表示该档位没有挂单
+// 数量可能为0，表示该档位没有挂单
+// 深度数据通常用于分析市场流动性和支撑阻力位
+type DepthData struct {
+	Symbol     string    `json:"symbol"`     // 交易对
+	Timestamp  time.Time `json:"timestamp"`  // 数据时间戳
+	LastUpdate time.Time `json:"last_update"` // 最后更新时间
+	Bids       []DepthLevel `json:"bids"`     // 买盘 [价格, 数量] 按价格降序排列
+	Asks       []DepthLevel `json:"asks"`     // 卖盘 [价格, 数量] 按价格升序排列
+	Spread     float64   `json:"spread"`     // 买卖价差 (ask0 - bid0)
+	MidPrice   float64   `json:"mid_price"`  // 中间价 (bid0 + ask0) / 2
+}
+
+// DepthLevel 深度档位数据
+type DepthLevel struct {
+	Price    float64 `json:"price"`    // 价格
+	Quantity float64 `json:"quantity"` // 数量
+}
+
+// DepthAnalysis 深度数据分析结果
+type DepthAnalysis struct {
+	Symbol            string    `json:"symbol"`
+	Timestamp         time.Time `json:"timestamp"`
+	BidDepth          float64   `json:"bid_depth"`           // 买盘总深度
+	AskDepth          float64   `json:"ask_depth"`           // 卖盘总深度
+	BidAskRatio       float64   `json:"bid_ask_ratio"`       // 买卖盘比例
+	LargeBidOrders    int       `json:"large_bid_orders"`    // 大买单数量 (>平均数量*2)
+	LargeAskOrders    int       `json:"large_ask_orders"`    // 大卖单数量
+	SupportLevels     []float64 `json:"support_levels"`      // 支撑位 (买盘密集区域)
+	ResistanceLevels  []float64 `json:"resistance_levels"`   // 阻力位 (卖盘密集区域)
+	LiquidityScore    float64   `json:"liquidity_score"`     // 流动性评分 (0-100)
+	MarketSentiment   string    `json:"market_sentiment"`      // 市场情绪: "bullish", "bearish", "neutral"
 }
 
 // IntradayData 日内数据(3分钟间隔)

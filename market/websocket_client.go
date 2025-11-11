@@ -68,6 +68,17 @@ type TickerWSData struct {
 	Count              int    `json:"n"`
 }
 
+// DepthWSData WebSocket深度数据
+type DepthWSData struct {
+	EventType     string       `json:"e"`
+	EventTime     int64        `json:"E"`
+	Symbol        string       `json:"s"`
+	FirstUpdateID int64        `json:"U"`
+	FinalUpdateID int64        `json:"u"`
+	Bids          [][]string   `json:"b"` // [价格, 数量]
+	Asks          [][]string   `json:"a"` // [价格, 数量]
+}
+
 func NewWSClient() *WSClient {
 	return &WSClient{
 		subscribers: make(map[string]chan []byte),
@@ -110,6 +121,11 @@ func (w *WSClient) SubscribeTicker(symbol string) error {
 
 func (w *WSClient) SubscribeMiniTicker(symbol string) error {
 	stream := fmt.Sprintf("%s@miniTicker", symbol)
+	return w.subscribe(stream)
+}
+
+func (w *WSClient) SubscribeDepth(symbol string, levels int) error {
+	stream := fmt.Sprintf("%s@depth%d", symbol, levels)
 	return w.subscribe(stream)
 }
 

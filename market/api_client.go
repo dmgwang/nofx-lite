@@ -158,3 +158,90 @@ func (c *APIClient) GetCurrentPrice(symbol string) (float64, error) {
 
 	return price, nil
 }
+
+// GetOrderBookData 获取订单簿深度数据
+// limit参数控制返回的档位数量，建议值：5, 10, 20
+// 返回的数据包含买卖盘各limit个档位的数据
+func (c *APIClient) GetOrderBookData(symbol string, limit int) (*DepthData, error) {
+	url := fmt.Sprintf("%s/fapi/v1/depth", baseURL)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	q := req.URL.Query()
+	q.Add("symbol", symbol)
+	q.Add("limit", strconv.Itoa(limit))
+	req.URL.RawQuery = q.Encode()
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	// Binance API响应结构
+	var apiResponse struct {
+		LastUpdateID int64      `json:"lastUpdateId"`
+		Bids         [][]string `json:"bids"` // [价格, 数量]
+		Asks         [][]string `json:"asks"` // [价格, 数量]
+	}
+
+	err = json.Unmarshal(body, &apiResponse)
+	if err != nil {
+		log.Printf("解析订单簿数据失败,响应内容: %s", string(body))
+		return nil, err
+	}
+
+	// 转换为内部数据结构
+	depthData := &DepthData{
+		Symbol:     symbol,
+		Timestamp:  time.Now(),
+		LastUpdate: time.Now(),
+		Bids:       make([]DepthLevel, 0, len(apiResponse.Bids)),
+		Asks:       make([]DepthLevel, 0, len(apiResponse.Asks)),
+	}
+
+	// 解析买盘数据 (按价格降序排列)
+	for _, bid := range apiResponse.Bids {
+		if len(bid) >= 2 {
+			price, err1 := strconv.ParseFloat(bid[0], 64)
+			quantity, err2 := strconv.ParseFloat(bid[1], 64)
+			if err1 == nil && err2 == nil && quantity > 0 {
+				depthData.Bids = append(depthData.Bids, DepthLevel{
+					Price:    price,
+					Quantity: quantity,
+				})
+			}
+		}
+	}
+
+	// 解析卖盘数据 (按价格升序排列)
+	for _, ask := range apiResponse.Asks {
+		if len(ask) >= 2 {
+			price, err1 := strconv.ParseFloat(ask[0], 64)
+			quantity, err2 := strconv.ParseFloat(ask[1], 64)
+			if err1 == nil && err2 == nil && quantity > 0 {
+				depthData.Asks = append(depthData.Asks, DepthLevel{
+					Price:    price,
+					Quantity: quantity,
+				})
+			}
+		}
+	}
+
+	// 计算买卖价差和中间价
+	if len(depthData.Bids) > 0 && len(depthData.Asks) > 0 {
+		bestBid := depthData.Bids[0].Price
+		bestAsk := depthData.Asks[0].Price
+		depthData.Spread = bestAsk - bestBid
+		depthData.MidPrice = (bestBid + bestAsk) / 2
+	}
+
+	return depthData, nil
+}

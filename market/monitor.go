@@ -18,6 +18,10 @@ type WSMonitor struct {
 	klineDataMap3m sync.Map // 存储每个交易对的K线历史数据
 	klineDataMap4h sync.Map // 存储每个交易对的K线历史数据
 	tickerDataMap  sync.Map // 存储每个交易对的ticker数据
+	depthDataMap   sync.Map // 存储每个交易对的深度数据
+	depthDataCache map[string]*DepthData // 深度数据缓存，减少重复计算
+	cacheMutex     sync.RWMutex // 缓存读写锁
+	cacheExpiry    time.Duration // 缓存过期时间
 	batchSize      int
 	filterSymbols  sync.Map // 使用sync.Map来存储需要监控的币种和其状态
 	symbolStats    sync.Map // 存储币种统计信息
@@ -40,6 +44,8 @@ func NewWSMonitor(batchSize int) *WSMonitor {
 		combinedClient: NewCombinedStreamsClient(batchSize),
 		alertsChan:     make(chan Alert, 1000),
 		batchSize:      batchSize,
+		depthDataCache: make(map[string]*DepthData),
+		cacheExpiry:    30 * time.Second, // 30秒缓存过期时间
 	}
 	return WSMonitorCli
 }
@@ -155,6 +161,8 @@ func (m *WSMonitor) subscribeAll() error {
 		for _, st := range subKlineTime {
 			m.subscribeSymbol(symbol, st)
 		}
+		// 订阅深度数据
+		m.subscribeDepth(symbol)
 	}
 	for _, st := range subKlineTime {
 		err := m.combinedClient.BatchSubscribeKlines(m.symbols, st)
@@ -162,6 +170,12 @@ func (m *WSMonitor) subscribeAll() error {
 			log.Printf("❌ 订阅 %s K线失败: %v", st, err)
 			return err
 		}
+	}
+	// 批量订阅深度数据
+	err := m.combinedClient.BatchSubscribeDepth(m.symbols, 10)
+	if err != nil {
+		log.Printf("❌ 订阅深度数据失败: %v", err)
+		return err
 	}
 	log.Println("所有交易对订阅完成")
 	return nil
@@ -176,6 +190,75 @@ func (m *WSMonitor) handleKlineData(symbol string, ch <-chan []byte, _time strin
 		}
 		m.processKlineUpdate(symbol, klineData, _time)
 	}
+}
+
+func (m *WSMonitor) subscribeDepth(symbol string) {
+	stream := fmt.Sprintf("%s@depth10", strings.ToLower(symbol))
+	ch := m.combinedClient.AddSubscriber(stream, 100)
+	go m.handleDepthData(symbol, ch)
+}
+
+func (m *WSMonitor) handleDepthData(symbol string, ch <-chan []byte) {
+	for data := range ch {
+		var depthData DepthWSData
+		if err := json.Unmarshal(data, &depthData); err != nil {
+			log.Printf("解析深度数据失败: %v", err)
+			continue
+		}
+		m.processDepthUpdate(symbol, depthData)
+	}
+}
+
+func (m *WSMonitor) processDepthUpdate(symbol string, wsData DepthWSData) {
+	// 转换WebSocket数据为DepthData结构
+	depthData := DepthData{
+		Symbol:    symbol,
+		Timestamp: time.Unix(wsData.EventTime/1000, 0),
+	}
+	
+	// 解析买盘数据
+	for _, bid := range wsData.Bids {
+		if len(bid) >= 2 {
+			price, _ := parseFloat(bid[0])
+			quantity, _ := parseFloat(bid[1])
+			depthData.Bids = append(depthData.Bids, DepthLevel{
+				Price:    price,
+				Quantity: quantity,
+			})
+		}
+	}
+	
+	// 解析卖盘数据
+	for _, ask := range wsData.Asks {
+		if len(ask) >= 2 {
+			price, _ := parseFloat(ask[0])
+			quantity, _ := parseFloat(ask[1])
+			depthData.Asks = append(depthData.Asks, DepthLevel{
+				Price:    price,
+				Quantity: quantity,
+			})
+		}
+	}
+	
+	// 计算价差和中价
+	if len(depthData.Bids) > 0 && len(depthData.Asks) > 0 {
+		bestBid := depthData.Bids[0].Price
+		bestAsk := depthData.Asks[0].Price
+		depthData.Spread = bestAsk - bestBid
+		depthData.MidPrice = (bestBid + bestAsk) / 2
+	}
+	
+	// 分析深度数据
+	analysis := AnalyzeDepthData(&depthData)
+	depthData.LastUpdate = analysis.Timestamp
+	
+	// 存储深度数据
+	m.depthDataMap.Store(symbol, depthData)
+	
+	// 更新缓存
+	m.cacheMutex.Lock()
+	m.depthDataCache[symbol] = &depthData
+	m.cacheMutex.Unlock()
 }
 
 func (m *WSMonitor) getKlineDataMap(_time string) *sync.Map {
@@ -265,6 +348,82 @@ func (m *WSMonitor) GetCurrentKlines(symbol string, _time string) ([]Kline, erro
 	result := make([]Kline, len(klines))
 	copy(result, klines)
 	return result, nil
+}
+
+func (m *WSMonitor) GetCurrentDepth(symbol string) (*DepthData, error) {
+	// 首先检查缓存
+	m.cacheMutex.RLock()
+	if cachedData, exists := m.depthDataCache[symbol]; exists {
+		// 检查缓存是否过期
+		if time.Since(cachedData.Timestamp) < m.cacheExpiry {
+			m.cacheMutex.RUnlock()
+			return cachedData, nil
+		}
+	}
+	m.cacheMutex.RUnlock()
+
+	// 获取当前深度数据
+	value, exists := m.depthDataMap.Load(symbol)
+	if !exists {
+		// 如果Ws数据未初始化完成时,使用API获取
+		apiClient := NewAPIClient()
+		depthData, err := apiClient.GetOrderBookData(symbol, 10)
+		if err != nil {
+			return nil, fmt.Errorf("获取深度数据失败: %v", err)
+		}
+		// 分析深度数据
+		analysis := AnalyzeDepthData(depthData)
+		depthData.LastUpdate = analysis.Timestamp
+		// 存储深度数据
+		m.depthDataMap.Store(symbol, *depthData)
+		
+		// 更新缓存
+		m.cacheMutex.Lock()
+		m.depthDataCache[symbol] = depthData
+		m.cacheMutex.Unlock()
+		
+		return depthData, nil
+	}
+	
+	depthData := value.(DepthData)
+	
+	// 更新缓存
+	m.cacheMutex.Lock()
+	m.depthDataCache[symbol] = &depthData
+	m.cacheMutex.Unlock()
+	
+	return &depthData, nil
+}
+
+func (m *WSMonitor) ClearCache() {
+	m.cacheMutex.Lock()
+	defer m.cacheMutex.Unlock()
+	
+	// 清理过期缓存
+	now := time.Now()
+	for symbol, data := range m.depthDataCache {
+		if now.Sub(data.Timestamp) > m.cacheExpiry {
+			delete(m.depthDataCache, symbol)
+		}
+	}
+}
+
+func (m *WSMonitor) GetCacheStats() map[string]interface{} {
+	m.cacheMutex.RLock()
+	defer m.cacheMutex.RUnlock()
+	
+	stats := make(map[string]interface{})
+	stats["cache_size"] = len(m.depthDataCache)
+	stats["cache_expiry_seconds"] = m.cacheExpiry.Seconds()
+	
+	// 统计缓存命中率（简化版）
+	hitCount := 0
+	for range m.depthDataCache {
+		hitCount++
+	}
+	stats["active_cache_items"] = hitCount
+	
+	return stats
 }
 
 func (m *WSMonitor) Close() {
