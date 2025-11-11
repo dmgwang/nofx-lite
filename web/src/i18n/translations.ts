@@ -575,7 +575,7 @@ export const translations = {
         stopped: '已停止',
         adminMode: '管理员模式',
         logout: '退出',
-        switchTrader: '切换交易员:',
+        switchTrader: '切换交易员',
         view: '查看',
 
         // Navigation
@@ -636,7 +636,7 @@ export const translations = {
         displayRange: '显示范围',
         recent: '最近',
         allData: '全部数据',
-        cycles: '个',
+        cycles: '交易周期',
 
         // Comparison Chart
         comparisonMode: '对比模式',

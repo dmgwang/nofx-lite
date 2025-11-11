@@ -528,14 +528,37 @@ func parseFullDecisionResponse(aiResponse string, ctx *Context) (*FullDecision, 
 
 // extractCoTTrace 提取思维链分析
 func extractCoTTrace(response string) string {
-    // Prefer explicit reasoning tag
+    // First: explicit reasoning tag
     s := strings.TrimSpace(removeInvisibleRunes(response))
     if m := reReasoningTag.FindStringSubmatch(s); len(m) >= 2 {
         return strings.TrimSpace(m[1])
     }
 
-    // Otherwise, capture prose around JSON decisions blocks
-    // Cut off at first JSON fence or <decision> tag
+    // Try to parse JSON wrapper and extract CoT as JSON (object/array) or string
+    coTKeys := []string{"cot_trace", "chain_of_thought", "cot", "reasoning", "analysis"}
+
+    // Prefer fenced JSON content
+    if m := reJSONFenceGeneric.FindStringSubmatch(s); len(m) >= 2 {
+        inner := strings.TrimSpace(stripJSONComments(m[1]))
+        if cot := extractCoTFromJSONObject(inner, coTKeys); cot != "" {
+            return cot
+        }
+    }
+
+    // Next: sanitized JSON (may be object containing decisions)
+    inner := sanitizeModelResponse(response)
+    if cot := extractCoTFromJSONObject(inner, coTKeys); cot != "" {
+        return cot
+    }
+
+    // Fallback: scan raw response for an object containing any CoT keys
+    if obj := findObjectWithAnyKey(s, coTKeys); obj != "" {
+        if cot := extractCoTFromJSONObject(obj, coTKeys); cot != "" {
+            return cot
+        }
+    }
+
+    // Last resort: capture prose around JSON decision blocks
     fenceIdx := strings.Index(s, "```json")
     decTagIdx := strings.Index(s, "<decision>")
     cutoff := len(s)
@@ -549,7 +572,6 @@ func extractCoTTrace(response string) string {
     if head != "" {
         return head
     }
-    // If no head prose, try text after the first JSON fence/decision block
     if fenceIdx >= 0 {
         tail := strings.TrimSpace(s[fenceIdx+len("```json"):])
         return tail
@@ -557,6 +579,68 @@ func extractCoTTrace(response string) string {
     if decTagIdx >= 0 {
         tail := strings.TrimSpace(s[decTagIdx+len("<decision>"):])
         return tail
+    }
+    return ""
+}
+
+// extractCoTFromJSONObject attempts to parse 's' as a JSON object and returns a pretty-printed
+// JSON string or a plain string value from common CoT keys. Returns empty string if not found.
+func extractCoTFromJSONObject(s string, keys []string) string {
+    s = strings.TrimSpace(s)
+    if s == "" || !strings.HasPrefix(s, "{") {
+        return ""
+    }
+    var m map[string]interface{}
+    if err := json.Unmarshal([]byte(s), &m); err != nil {
+        return ""
+    }
+    // Normalize keys (lowercase compare)
+    for k, v := range m {
+        lk := strings.ToLower(k)
+        for _, target := range keys {
+            if lk == target {
+                switch vv := v.(type) {
+                case string:
+                    return strings.TrimSpace(vv)
+                default:
+                    b, err := json.MarshalIndent(v, "", "  ")
+                    if err == nil {
+                        return string(b)
+                    }
+                }
+            }
+        }
+    }
+    return ""
+}
+
+// findObjectWithAnyKey locates an object substring containing any of the provided keys.
+// It searches for '"key"' and slices to the nearest enclosing balanced object.
+func findObjectWithAnyKey(s string, keys []string) string {
+    idx := -1
+    for _, k := range keys {
+        i := strings.Index(s, "\""+k+"\"")
+        if i >= 0 && (idx < 0 || i < idx) {
+            idx = i
+        }
+    }
+    if idx < 0 {
+        return ""
+    }
+    // find nearest '{' before idx
+    start := -1
+    for i := idx; i >= 0; i-- {
+        if s[i] == '{' {
+            start = i
+            break
+        }
+    }
+    if start < 0 {
+        return ""
+    }
+    end := findMatchingBrace(s, start)
+    if end > start {
+        return s[start : end+1]
     }
     return ""
 }
