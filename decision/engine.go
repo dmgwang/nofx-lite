@@ -398,6 +398,15 @@ func buildSystemPrompt(accountEquity float64, btcEthLeverage, altcoinLeverage in
     return sb.String()
 }
 
+// PreviewSystemPrompt provides a simple exported helper to build the system prompt
+// for a given template name using representative parameters. This is intended for
+// tests and preview tooling where we only need the composed prompt content without
+// invoking the full decision-making flow.
+func PreviewSystemPrompt(templateName string) string {
+    // Use fixed sample values; core content comes from the template and fixed sections.
+    return buildSystemPrompt(1000 /*account equity*/, 5 /*BTC/ETH leverage*/, 10 /*altcoin leverage*/, templateName)
+}
+
 // buildUserPrompt 构建 User Prompt（动态数据）
 func buildUserPrompt(ctx *Context) string {
 	var sb strings.Builder
@@ -501,24 +510,54 @@ func buildUserPrompt(ctx *Context) string {
 
 // parseFullDecisionResponse 解析AI的完整决策响应
 func parseFullDecisionResponse(aiResponse string, ctx *Context) (*FullDecision, error) {
-    // Strict JSON-only parsing: expect a single object with key 'decisions'
+    // Parse decisions JSON
     decisions, err := extractDecisionsStrict(aiResponse)
+    // Extract chain-of-thought reasoning (non-JSON) for display/debug
+    cot := strings.TrimSpace(extractCoTTrace(aiResponse))
     if err != nil {
-        return &FullDecision{CoTTrace: "", Decisions: []Decision{}}, fmt.Errorf("strict JSON parsing failed: %w", err)
+        return &FullDecision{CoTTrace: cot, Decisions: []Decision{}}, fmt.Errorf("strict JSON parsing failed: %w", err)
     }
 
     // Validate decisions against risk constraints
     if err := validateDecisions(decisions, ctx.Account.TotalEquity, ctx.BTCETHLeverage, ctx.AltcoinLeverage, ctx); err != nil {
-        return &FullDecision{CoTTrace: "", Decisions: decisions}, fmt.Errorf("decision validation failed: %w", err)
+        return &FullDecision{CoTTrace: cot, Decisions: decisions}, fmt.Errorf("decision validation failed: %w", err)
     }
 
-    return &FullDecision{CoTTrace: "", Decisions: decisions}, nil
+    return &FullDecision{CoTTrace: cot, Decisions: decisions}, nil
 }
 
 // extractCoTTrace 提取思维链分析
 func extractCoTTrace(response string) string {
-    // JSON-only mode: model should not output reasoning text.
-    // Keep empty to avoid mixing non-JSON content.
+    // Prefer explicit reasoning tag
+    s := strings.TrimSpace(removeInvisibleRunes(response))
+    if m := reReasoningTag.FindStringSubmatch(s); len(m) >= 2 {
+        return strings.TrimSpace(m[1])
+    }
+
+    // Otherwise, capture prose around JSON decisions blocks
+    // Cut off at first JSON fence or <decision> tag
+    fenceIdx := strings.Index(s, "```json")
+    decTagIdx := strings.Index(s, "<decision>")
+    cutoff := len(s)
+    if fenceIdx >= 0 && fenceIdx < cutoff {
+        cutoff = fenceIdx
+    }
+    if decTagIdx >= 0 && decTagIdx < cutoff {
+        cutoff = decTagIdx
+    }
+    head := strings.TrimSpace(s[:cutoff])
+    if head != "" {
+        return head
+    }
+    // If no head prose, try text after the first JSON fence/decision block
+    if fenceIdx >= 0 {
+        tail := strings.TrimSpace(s[fenceIdx+len("```json"):])
+        return tail
+    }
+    if decTagIdx >= 0 {
+        tail := strings.TrimSpace(s[decTagIdx+len("<decision>"):])
+        return tail
+    }
     return ""
 }
 
