@@ -57,11 +57,11 @@ func (ss *SecureStorage) SaveEncryptedExchangeConfig(userID, exchangeID, apiKey,
 	}
 
 	// 更新數據庫
-	_, err = ss.db.Exec(`
-		UPDATE exchanges
-		SET api_key = ?, secret_key = ?, aster_private_key = ?, updated_at = datetime('now')
-		WHERE user_id = ? AND id = ?
-	`, encryptedAPIKey, encryptedSecretKey, encryptedPrivateKey, userID, exchangeID)
+    _, err = ss.db.Exec(`
+        UPDATE exchanges
+        SET api_key = $1, secret_key = $2, aster_private_key = $3, updated_at = CURRENT_TIMESTAMP
+        WHERE user_id = $4 AND id = $5
+    `, encryptedAPIKey, encryptedSecretKey, encryptedPrivateKey, userID, exchangeID)
 
 	if err != nil {
 		return err
@@ -78,11 +78,11 @@ func (ss *SecureStorage) SaveEncryptedExchangeConfig(userID, exchangeID, apiKey,
 func (ss *SecureStorage) LoadDecryptedExchangeConfig(userID, exchangeID string) (apiKey, secretKey, asterPrivateKey string, err error) {
 	var encryptedAPIKey, encryptedSecretKey, encryptedPrivateKey sql.NullString
 
-	err = ss.db.QueryRow(`
-		SELECT api_key, secret_key, aster_private_key
-		FROM exchanges
-		WHERE user_id = ? AND id = ?
-	`, userID, exchangeID).Scan(&encryptedAPIKey, &encryptedSecretKey, &encryptedPrivateKey)
+    err = ss.db.QueryRow(`
+        SELECT api_key, secret_key, aster_private_key
+        FROM exchanges
+        WHERE user_id = $1 AND id = $2
+    `, userID, exchangeID).Scan(&encryptedAPIKey, &encryptedSecretKey, &encryptedPrivateKey)
 
 	if err != nil {
 		return "", "", "", err
@@ -127,11 +127,11 @@ func (ss *SecureStorage) SaveEncryptedAIModelConfig(userID, modelID, apiKey stri
 		return fmt.Errorf("加密 API Key 失敗: %w", err)
 	}
 
-	_, err = ss.db.Exec(`
-		UPDATE ai_models
-		SET api_key = ?, updated_at = datetime('now')
-		WHERE user_id = ? AND id = ?
-	`, encryptedAPIKey, userID, modelID)
+    _, err = ss.db.Exec(`
+        UPDATE ai_models
+        SET api_key = $1, updated_at = CURRENT_TIMESTAMP
+        WHERE user_id = $2 AND id = $3
+    `, encryptedAPIKey, userID, modelID)
 
 	if err != nil {
 		return err
@@ -146,9 +146,9 @@ func (ss *SecureStorage) SaveEncryptedAIModelConfig(userID, modelID, apiKey stri
 func (ss *SecureStorage) LoadDecryptedAIModelConfig(userID, modelID string) (string, error) {
 	var encryptedAPIKey sql.NullString
 
-	err := ss.db.QueryRow(`
-		SELECT api_key FROM ai_models WHERE user_id = ? AND id = ?
-	`, userID, modelID).Scan(&encryptedAPIKey)
+    err := ss.db.QueryRow(`
+        SELECT api_key FROM ai_models WHERE user_id = $1 AND id = $2
+    `, userID, modelID).Scan(&encryptedAPIKey)
 
 	if err != nil {
 		return "", err
@@ -171,29 +171,35 @@ func (ss *SecureStorage) LoadDecryptedAIModelConfig(userID, modelID string) (str
 
 // initAuditLog 初始化審計日誌表
 func (ss *SecureStorage) initAuditLog() error {
-	_, err := ss.db.Exec(`
-		CREATE TABLE IF NOT EXISTS audit_logs (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			user_id TEXT NOT NULL,
-			action TEXT NOT NULL,
-			resource TEXT NOT NULL,
-			details TEXT,
-			ip_address TEXT,
-			user_agent TEXT,
-			timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-			INDEX idx_user_time (user_id, timestamp),
-			INDEX idx_action (action)
-		)
-	`)
-	return err
+    _, err := ss.db.Exec(`
+        CREATE TABLE IF NOT EXISTS audit_logs (
+            id SERIAL PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            action TEXT NOT NULL,
+            resource TEXT NOT NULL,
+            details TEXT,
+            ip_address TEXT,
+            user_agent TEXT,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    `)
+    if err != nil {
+        return err
+    }
+    _, err = ss.db.Exec(`CREATE INDEX IF NOT EXISTS idx_user_time ON audit_logs(user_id, timestamp)`)
+    if err != nil {
+        return err
+    }
+    _, err = ss.db.Exec(`CREATE INDEX IF NOT EXISTS idx_action ON audit_logs(action)`)
+    return err
 }
 
 // logAudit 記錄審計日誌
 func (ss *SecureStorage) logAudit(userID, action, resource, details string) {
-	_, err := ss.db.Exec(`
-		INSERT INTO audit_logs (user_id, action, resource, details)
-		VALUES (?, ?, ?, ?)
-	`, userID, action, resource, details)
+    _, err := ss.db.Exec(`
+        INSERT INTO audit_logs (user_id, action, resource, details)
+        VALUES ($1, $2, $3, $4)
+    `, userID, action, resource, details)
 
 	if err != nil {
 		log.Printf("⚠️ 審計日誌記錄失敗: %v", err)
@@ -202,13 +208,13 @@ func (ss *SecureStorage) logAudit(userID, action, resource, details string) {
 
 // GetAuditLogs 查詢審計日誌
 func (ss *SecureStorage) GetAuditLogs(userID string, limit int) ([]AuditLog, error) {
-	rows, err := ss.db.Query(`
-		SELECT id, user_id, action, resource, details, timestamp
-		FROM audit_logs
-		WHERE user_id = ?
-		ORDER BY timestamp DESC
-		LIMIT ?
-	`, userID, limit)
+    rows, err := ss.db.Query(`
+        SELECT id, user_id, action, resource, details, timestamp
+        FROM audit_logs
+        WHERE user_id = $1
+        ORDER BY timestamp DESC
+        LIMIT $2
+    `, userID, limit)
 
 	if err != nil {
 		return nil, err
@@ -251,11 +257,11 @@ func (ss *SecureStorage) MigrateToEncrypted() error {
 	defer tx.Rollback()
 
 	// 遷移交易所配置
-	rows, err := tx.Query(`
-		SELECT user_id, id, api_key, secret_key, aster_private_key
-		FROM exchanges
-		WHERE api_key != '' AND api_key NOT LIKE '%==%' -- 過濾已加密數據
-	`)
+    rows, err := tx.Query(`
+        SELECT user_id, id, api_key, secret_key, aster_private_key
+        FROM exchanges
+        WHERE api_key != '' AND api_key NOT LIKE '%==%'
+    `)
 	if err != nil {
 		return err
 	}
@@ -278,11 +284,11 @@ func (ss *SecureStorage) MigrateToEncrypted() error {
 		}
 
 		// 更新
-		_, err = tx.Exec(`
-			UPDATE exchanges
-			SET api_key = ?, secret_key = ?, aster_private_key = ?
-			WHERE user_id = ? AND id = ?
-		`, encAPIKey, encSecretKey, encPrivateKey, userID, exchangeID)
+        _, err = tx.Exec(`
+            UPDATE exchanges
+            SET api_key = $1, secret_key = $2, aster_private_key = $3
+            WHERE user_id = $4 AND id = $5
+        `, encAPIKey, encSecretKey, encPrivateKey, userID, exchangeID)
 
 		if err != nil {
 			rows.Close()

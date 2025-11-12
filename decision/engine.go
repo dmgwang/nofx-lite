@@ -386,7 +386,11 @@ func buildSystemPrompt(accountEquity float64, btcEthLeverage, altcoinLeverage in
     sb.WriteString(fmt.Sprintf("4) Leverage caps: Alt ≤ %dx | BTC/ETH ≤ %dx (hard limit).\n", altcoinLeverage, btcEthLeverage))
     sb.WriteString("5) Margin usage: total ≤ 90%.\n")
     sb.WriteString("6) Min notional: ≥ 12 USDT (exchange min + safety).\n")
-    sb.WriteString("7) Volatility-aware stops: use ATR14-based distances (≥ 1×ATR14).\n\n")
+    sb.WriteString("7) Volatility-aware stops: use ATR14-based distances (≥ 1×ATR14).\n")
+    sb.WriteString("8) CRITICAL: Stop-loss and take-profit placement:\n")
+    sb.WriteString("   - For LONG positions: stop_loss < entry_price < take_profit\n")
+    sb.WriteString("   - For SHORT positions: take_profit < entry_price < stop_loss\n")
+    sb.WriteString("   - Violating this will cause validation failure!\n\n")
 
     // 3. Output format (JSON-only, strict)
     sb.WriteString("# Output Format (strict)\n\n")

@@ -160,26 +160,15 @@ func main() {
 	// In Docker Compose, variables are injected by the runtime and this is harmless.
 	_ = godotenv.Load()
 
-	// 初始化数据库配置
-	dbPath := "config.db"
-	if len(os.Args) > 1 {
-		dbPath = os.Args[1]
-	}
-
-	// 🔧 Docker容器环境检查：如果在容器中运行，使用/data目录
-	if _, err := os.Stat("/app/data"); err == nil {
-		dbPath = "/app/data/config.db"
-		log.Printf("🐳 检测到Docker容器环境，使用数据卷路径: %s", dbPath)
-	}
-
-	// 🔧 Docker容器环境检查：确保数据库路径是文件而不是目录
-	if fileInfo, err := os.Stat(dbPath); err == nil && fileInfo.IsDir() {
-		log.Printf("⚠️  检测到数据库路径 %s 是一个目录，正在删除...", dbPath)
-		if err := os.RemoveAll(dbPath); err != nil {
-			log.Fatalf("❌ 无法删除数据库目录 %s: %v", dbPath, err)
-		}
-		log.Printf("✅ 已删除数据库目录 %s", dbPath)
-	}
+    // 初始化 PostgreSQL 连接字符串
+    dsn := strings.TrimSpace(os.Getenv("DATABASE_URL"))
+    if len(os.Args) > 1 {
+        dsn = os.Args[1]
+    }
+    if dsn == "" {
+        dsn = "postgres://postgres:postgres@localhost:5432/nofx?sslmode=disable"
+        log.Printf("DATABASE_URL is not set, using default DSN: %s", dsn)
+    }
 
 	// 读取配置文件
 	configFile, err := loadConfigFile()
@@ -187,8 +176,8 @@ func main() {
 		log.Fatalf("❌ 读取config.json失败: %v", err)
 	}
 
-	log.Printf("📋 初始化配置数据库: %s", dbPath)
-	database, err := config.NewDatabase(dbPath)
+    log.Printf("📋 初始化配置数据库: %s", dsn)
+    database, err := config.NewDatabase(dsn)
 	if err != nil {
 		log.Fatalf("❌ 初始化数据库失败: %v", err)
 	}

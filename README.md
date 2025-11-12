@@ -2,7 +2,7 @@
 
 > Fork of [NOFX](https://github.com/NoFxAiOS/nofx)
 
-[![Go Version](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat&logo=go)](https://golang.org/)
+[![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat&logo=go)](https://golang.org/)
 [![React](https://img.shields.io/badge/React-18+-61DAFB?style=flat&logo=react)](https://reactjs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0+-3178C6?style=flat&logo=typescript)](https://www.typescriptlang.org/)
 [![License](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
@@ -35,7 +35,7 @@ NOFX-Lite supports **three major exchanges**: Binance, Hyperliquid, and Aster DE
 
 ## 🏗️ Technical Architecture
 
-- **Backend:** Go + Gin framework + SQLite
+- **Backend:** Go + Gin framework + PostgreSQL
 - **Frontend:** React 18 + TypeScript + Vite + TailwindCSS  
 - **Multi-Exchange:** Binance, Hyperliquid, Aster DEX
 - **AI Models:** DeepSeek, Qwen, OpenAI-compatible APIs
@@ -83,28 +83,23 @@ chmod +x quick-deploy.sh && ./quick-deploy.sh
 
 ### 📦 Manual Installation (Developers)
 
-**Prerequisites:** Go 1.21+, Node.js 18+, TA-Lib
+**Prerequisites:** Go 1.25+, Node.js 18+
 
-**Install TA-Lib:**
-```bash
-# macOS
-brew install ta-lib
-
-# Ubuntu/Debian
-sudo apt-get install -y build-essential wget
-wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz
-tar -xzf ta-lib-0.4.0-src.tar.gz && cd ta-lib
-./configure --prefix=/usr/local && make && sudo make install
-cd .. && rm -rf ta-lib ta-lib-0.4.0-src.tar.gz
-```
+ 
 
 **Build & Run:**
 ```bash
 git clone https://github.com/dmgwang/nofx-lite.git && cd nofx-lite
 cp config.json.example config.json  # Edit with your keys
 
-cd backend && go mod download && go build -o nofx-backend && ./nofx-backend &
-cd ../web && npm install && npm run dev
+go mod download
+go build -o nofx
+
+# Start backend (set DATABASE_URL or pass DSN arg)
+DATABASE_URL="postgres://postgres:postgres@localhost:5432/nofx?sslmode=disable" ./nofx
+
+# Frontend
+cd web && npm install && npm run dev
 
 # Access: http://localhost:3000
 ```
@@ -135,7 +130,7 @@ Configure any OpenAI-compatible endpoint in the web interface
 go build -o nofx
 
 # Start the backend
-./nofx
+DATABASE_URL="postgres://postgres:postgres@localhost:5432/nofx?sslmode=disable" ./nofx
 ```
 
 **What you should see:**
@@ -148,7 +143,7 @@ go build -o nofx
 🤖 数据库中的AI交易员配置:
   • 暂无配置的交易员，请通过Web界面创建
 
-🌐 API服务器启动在 http://localhost:8081
+🌐 API服务器启动在 http://localhost:8080
 ```
 
 #### **Step 2: Start the Frontend**
@@ -285,10 +280,10 @@ go build -o nofx
 
 | Error Message                | Solution                                                                            |
 | ---------------------------- | ----------------------------------------------------------------------------------- |
-| `invalid API key`          | Check your Binance API key in config.json                                           |
-| `TA-Lib not found`         | Run `brew install ta-lib` (macOS)                                                 |
-| `port 8080 already in use` | ~~Change `api_server_port` in config.json~~ *Change `API_PORT` in .env file* |
-| `DeepSeek API error`       | Verify your DeepSeek API key and balance                                            |
+| `invalid API key`          | Verify credentials via web UI; check permissions and credits                       |
+| `Build failed`             | Ensure Go and Node.js versions match prerequisites                                 |
+| `port 8080 already in use` | Set backend port via `NOFX_LITE_BACKEND_PORT` env var                              |
+| `DeepSeek/Qwen API error`  | Verify API key format and account balance                                           |
 
 **✅ Backend is running correctly when you see:**
 
@@ -350,9 +345,9 @@ Open your web browser and visit:
 
 | Error | Solution |
 |-------|----------|
-| TA-Lib Not Found | Windows: Install Visual Studio Build Tools<br>macOS: `brew install ta-lib`<br>Linux: Install dev packages |
-| Port 8080 in Use | `sudo lsof -i :8080 && kill -9 <PID>` |
-| Database Locked | `pkill -f nofx-backend && rm data/trading.db` |
+| Build Tools Missing | Windows: Install Visual Studio Build Tools<br>macOS/Linux: Install dev packages if needed |
+| Backend Port in Use | `sudo lsof -i :8080 && kill -9 <PID>` or set `NOFX_LITE_BACKEND_PORT` |
+| PostgreSQL Refused | Ensure Postgres is running; verify `DATABASE_URL` host/port/credentials |
 | Invalid API Key | Check format (sk-), permissions, credits |
 | Exchange Timeout | Check internet, credentials, exchange status |
 
@@ -372,6 +367,52 @@ The NOFX-Lite project is licensed under the **GNU Affero General Public License 
 - ✅ All derivatives must also be licensed under AGPL-3.0
 
 For commercial licensing or questions, please contact the maintainers.
+
+---
+
+## 🗄️ Database Upgrade: SQLite → PostgreSQL
+
+### Overview
+- Minimal-change upgrade: keep `database/sql` usage, switch driver to PostgreSQL
+- All tables, triggers, and SQL have been adapted to PostgreSQL
+
+### Prerequisites
+- A running PostgreSQL instance (local or cloud)
+- Connection string in `.env`: `DATABASE_URL="postgres://<user>:<pass>@<host>:<port>/<db>?sslmode=disable"`
+
+### Steps
+1. Create PostgreSQL database and user with appropriate privileges
+2. Prepare schema:
+   - `psql < db/migrations/pg_schema.sql`
+3. Export data from SQLite to CSV (example):
+   - `sqlite3 config.db -header -csv "SELECT * FROM users;" > users.csv`
+   - Repeat for `ai_models`, `exchanges`, `traders`, `user_signal_sources`, `system_config`, `beta_codes`
+4. Import data to PostgreSQL:
+   - Edit paths in `db/migrations/import_template.sql`
+   - `psql < db/migrations/import_template.sql`
+5. Configure backend:
+   - Add `DATABASE_URL` in `.env` or pass DSN as first CLI arg
+6. Start backend; schema verification and triggers are applied automatically
+
+### Data Type Notes
+- `DATETIME` → `TIMESTAMP`
+- `BOOLEAN 0/1` → `BOOLEAN FALSE/TRUE`
+- `AUTOINCREMENT` → `SERIAL`
+- `GROUP_CONCAT` → `STRING_AGG`
+
+### Transaction & Conflict Handling
+- Uses `ON CONFLICT DO NOTHING / DO UPDATE` for idempotent inserts
+- Explicit transactions retained for batch operations
+
+### Testing & Benchmark
+- Run unit tests: `go test ./test -v`
+- Benchmark sample: `go test ./test -bench=.`
+
+### Rollout Plan
+- Phase 1: Stand up PostgreSQL and run schema script
+- Phase 2: Export SQLite data and import to PostgreSQL
+- Phase 3: Switch application `DATABASE_URL` and run smoke tests
+- Phase 4: Monitor performance and logs; rollback by switching DSN back if needed
 
 ---
 

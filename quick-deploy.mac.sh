@@ -28,10 +28,13 @@ else
 fi
 
 # Build and start services
-echo "🏗️  Building containers..."
+echo "🏗️  Building containers (with PostgreSQL)..."
 docker compose build
 echo "▶️  Starting containers..."
 docker compose up -d
 
 echo "✅ Deployment complete! Web interface should be available at http://localhost:3000"
 echo "💡 Use 'docker compose logs -f' to view logs"
+if ! grep -q '^DATABASE_URL=' .env 2>/dev/null; then
+  echo "ℹ️  DATABASE_URL not set in .env; backend will use default: postgres://postgres:postgres@postgres:5432/nofx?sslmode=disable"
+fi

@@ -26,7 +26,7 @@ if ! command -v docker-compose >/dev/null 2>&1 && ! docker compose version >/dev
 fi
 
 # Build and start services
-echo "🏗️  Building containers..."
+echo "🏗️  Building containers (with PostgreSQL)..."
 if docker compose build; then
   echo "▶️  Starting containers..."
   docker compose up -d
@@ -35,4 +35,7 @@ if docker compose build; then
 else
   echo "❌ Build failed, please check the error messages above"
   exit 1
+fi
+if ! grep -q '^DATABASE_URL=' .env 2>/dev/null; then
+  echo "ℹ️  DATABASE_URL not set in .env; backend will use default: postgres://postgres:postgres@postgres:5432/nofx?sslmode=disable"
 fi
